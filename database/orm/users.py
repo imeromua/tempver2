@@ -4,7 +4,6 @@ import logging
 from typing import List
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 
 from database.engine import async_session, sync_session
 from database.models import User
@@ -19,9 +18,7 @@ async def orm_upsert_user(
 ):
     """
     Додає нового користувача або оновлює дані існуючого.
-
-    Використовує конструкцію INSERT ... ON CONFLICT (UPSERT),
-    специфічну для PostgreSQL, для атомарного виконання операції.
+    Використовує універсальний метод session.merge(), сумісний з SQLite та PostgreSQL.
 
     Args:
         user_id: ID користувача.
@@ -29,17 +26,15 @@ async def orm_upsert_user(
         first_name: Його ім'я.
     """
     async with async_session() as session:
-        stmt = insert(User).values(
+        # Створюємо об'єкт користувача
+        user = User(
             id=user_id,
             username=username,
             first_name=first_name
         )
-        # Якщо користувач з таким ID вже існує, оновлюємо його дані
-        stmt = stmt.on_conflict_do_update(
-            index_elements=['id'],
-            set_={'username': username, 'first_name': first_name}
-        )
-        await session.execute(stmt)
+        # merge перевіряє PK (id). 
+        # Якщо запис існує — оновлює його, якщо ні — створює новий.
+        await session.merge(user)
         await session.commit()
 
 

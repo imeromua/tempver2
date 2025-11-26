@@ -1,10 +1,11 @@
 # epicservice/database/orm/temp_lists.py
 
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from sqlalchemy import delete, func, select, distinct, update
 from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.engine import async_session, sync_session
 from database.models import Product, TempList, SavedList
@@ -15,14 +16,21 @@ logger = logging.getLogger(__name__)
 
 # --- Асинхронні функції для роботи з тимчасовими списками ---
 
-async def orm_clear_temp_list(user_id: int):
+async def orm_clear_temp_list(user_id: int, session: Optional[AsyncSession] = None):
     """
     Повністю очищує тимчасовий список для конкретного користувача.
+    Якщо передана сесія, використовує її (без коміту).
+    Якщо ні — створює нову і робить коміт.
     """
-    async with async_session() as session:
+    if session:
         query = delete(TempList).where(TempList.user_id == user_id)
         await session.execute(query)
-        await session.commit()
+        # Коміт тут НЕ робимо, бо сесія зовнішня
+    else:
+        async with async_session() as new_session:
+            query = delete(TempList).where(TempList.user_id == user_id)
+            await new_session.execute(query)
+            await new_session.commit()
 
 
 async def orm_add_item_to_temp_list(user_id: int, product_id: int, quantity: int):

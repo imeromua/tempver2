@@ -15,17 +15,20 @@ from handlers import (archive, common, error_handler, user_search)
 from handlers.admin import (archive_handlers as admin_archive,
                             core as admin_core,
                             import_handlers as admin_import,
-                            report_handlers as admin_reports)
+                            report_handlers as admin_reports,
+                            backup_handlers as admin_backups,
+                            export_handlers as admin_exports)
 from handlers.user import (item_addition, list_editing, list_management,
                            list_saving)
+
+# --- Імпортуємо Middleware ---
 from middlewares.logging_middleware import LoggingMiddleware
+from middlewares.throttling import ThrottlingMiddleware
 
 
-# --- ЗМІНА: Функція для видалення меню команд ---
 async def set_main_menu(bot: Bot):
     """
     Встановлює головне меню (команди) для бота.
-    Передача порожнього списку видаляє меню.
     """
     await bot.set_my_commands([])
 
@@ -67,20 +70,39 @@ async def main():
     ))
     dp = Dispatcher()
 
+    # --- Реєстрація Middleware ---
+    # 1. Логування (бачимо всі запити)
     dp.update.middleware(LoggingMiddleware())
+    
+    # 2. Тротлінг (анти-флуд). Окремо для повідомлень і кнопок.
+    dp.message.middleware(ThrottlingMiddleware(rate_limit=0.5))
+    dp.callback_query.middleware(ThrottlingMiddleware(rate_limit=0.5))
 
     # --- Реєстрація роутерів ---
+    # ВАЖЛИВО: Порядок має значення!
+    
+    # 1. Спочатку ловимо помилки
     dp.include_router(error_handler.router)
+    
+    # 2. Адмінські та специфічні функції
     dp.include_router(admin_core.router)
     dp.include_router(admin_import.router)
     dp.include_router(admin_reports.router)
     dp.include_router(admin_archive.router)
-    dp.include_router(common.router)
-    dp.include_router(archive.router)
+    dp.include_router(admin_backups.router)
+    dp.include_router(admin_exports.router)
     dp.include_router(list_management.router)
     dp.include_router(item_addition.router)
     dp.include_router(list_editing.router)
     dp.include_router(list_saving.router)
+    dp.include_router(archive.router)
+
+    # 3. Загальні команди (/start, /help)
+    # Вони мають йти ПЕРЕД пошуком, бо пошук перехоплює весь текст
+    dp.include_router(common.router) 
+    
+    # 4. Пошук (User Search)
+    # Цей роутер ловить будь-який текст (F.text), тому він має бути ОСТАННІМ
     dp.include_router(user_search.router)
 
     try:

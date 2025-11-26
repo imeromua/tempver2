@@ -35,3 +35,11 @@ archives/
 data.csv
 data.xlsx
 *.json
+
+alembic
+migrations/
+# --- Інші тимчасові файли ---
+alembic.ini
+*.db
+backups/
+epicservice_db

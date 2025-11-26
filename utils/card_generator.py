@@ -16,19 +16,66 @@ from utils.markdown_corrector import escape_markdown
 
 logger = logging.getLogger(__name__)
 
-
-def format_quantity(quantity_str: str) -> Union[int, float, str]:
-    """
-    Форматує рядок з кількістю у число (int або float).
-    Повертає int, якщо число ціле, інакше float.
-    Якщо конвертація неможлива, повертає оригінальний рядок.
-    """
+def format_quantity(quantity_str: str) -> Union[int, float]:
+    """Конвертує рядок кількості в int або float."""
     try:
-        quantity_float = float(str(quantity_str).replace(',', '.'))
-        return int(quantity_float) if quantity_float.is_integer() else quantity_float
+        val = float(str(quantity_str).replace(',', '.'))
+        return int(val) if val.is_integer() else val
     except (ValueError, TypeError):
-        return quantity_str
+        return 0
 
+def get_category_emoji(department: int, group: str, name: str) -> str:
+    """Підбирає емодзі залежно від категорії товару."""
+    name_lower = name.lower()
+    dept = int(department)
+
+    # 610 - Фреш / Продукти
+    if dept == 610:
+        if any(x in name_lower for x in ['ковбас', 'м\'яс', 'сосис']): return '🥩'
+        if 'сир' in name_lower: return '🧀'
+        if any(x in name_lower for x in ['вино', 'горілка', 'коньяк', 'пиво']): return '🍷'
+        if 'хліб' in name_lower or 'багет' in name_lower: return '🍞'
+        if 'риба' in name_lower: return '🐟'
+        if 'овоч' in name_lower or 'фрукт' in name_lower: return '🍎'
+        return '🍽'
+    
+    # 70 - Електроніка / Побутова техніка
+    elif dept == 70:
+        if 'пилосос' in name_lower: return '🧹'
+        if any(x in name_lower for x in ['бойлер', 'водонагрівач']): return '🔥'
+        if 'телевізор' in name_lower: return '📺'
+        if any(x in name_lower for x in ['чайник', 'кавоварка']): return '☕'
+        if 'холодильник' in name_lower: return '❄️'
+        return '⚡'
+
+    # 20 - Автотовари
+    elif dept == 20:
+        if 'олива' in name_lower or 'масло' in name_lower: return '🛢'
+        return '🚗'
+
+    # 50 - Господарство / Сантехніка
+    elif dept == 50:
+        if 'змішувач' in name_lower: return '🚰'
+        return '🏠'
+    
+    # 100 - Декор
+    elif dept == 100:
+        return '🎨'
+
+    return '📦'
+
+def format_months_no_sale(months: int) -> str:
+    """Форматує рядок 'Без руху'."""
+    if months is None: months = 0
+    
+    if months == 0:
+        return "🟢 Без руху: немає даних"
+    elif months <= 3:
+        return f"⏱ Без руху: {months} міс"
+    elif months <= 6:
+        return f"⚠️ Без руху: {months} міс"
+    else:
+        return f"🔴 Без руху: {months} міс ⚠️"
 
 async def send_or_edit_product_card(
     bot: Bot,
@@ -39,61 +86,80 @@ async def send_or_edit_product_card(
     search_query: str | None = None
 ) -> Message | None:
     """
-    Формує та надсилає (або редагує) картку товару.
-    Тепер повертає об'єкт надісланого або відредагованого повідомлення.
+    Формує та надсилає красиву картку товару.
     """
     try:
-        in_user_temp_list_qty = await orm_get_temp_list_item_quantity(user_id, product.id)
-        total_temp_reserved = await orm_get_total_temp_reservation_for_product(product.id)
+        # Отримуємо дані з БД
+        in_user_list_qty = await orm_get_temp_list_item_quantity(user_id, product.id)
+        total_reserved = await orm_get_total_temp_reservation_for_product(product.id)
 
-        try:
-            stock_quantity = float(str(product.кількість).replace(',', '.'))
-            permanently_reserved = product.відкладено or 0
-            available_for_anyone_qty = stock_quantity - permanently_reserved - total_temp_reserved
-            
-            display_available_qty = format_quantity(available_for_anyone_qty)
-            display_user_reserved_qty = format_quantity(in_user_temp_list_qty)
-            
-            int_available_for_button = max(0, int(available_for_anyone_qty))
+        # Обробка чисел
+        stock_qty = format_quantity(product.кількість)
+        perm_reserved = product.відкладено or 0
+        
+        # Доступно = Загалом - (Постійний резерв + Тимчасові резерви інших)
+        # Але ми показуємо юзеру: Залишок заг., Резерв (всіх), Доступно
+        
+        # Логіка відображення доступності
+        available_qty = max(0, stock_qty - perm_reserved - total_reserved)
+        
+        # Визначення одиниці виміру (евристика: якщо float - то кг/м, інакше шт)
+        is_float = isinstance(stock_qty, float)
+        unit = "кг" if is_float else "шт"
+        
+        # Ціни та суми
+        price = product.ціна or 0.0
+        stock_sum_val = stock_qty * price
+        
+        stock_sum_str = f"{stock_sum_val:,.2f}".replace(",", " ")
+        price_str = f"{price:,.2f}".replace(",", " ")
 
-            price = product.ціна or 0.0
-            
-            current_stock_sum = available_for_anyone_qty * price
-            reserved_sum = in_user_temp_list_qty * price
-            
-            display_stock_sum = f"{current_stock_sum:.2f}" if product.сума_залишку is not None else "---"
-            display_reserved_sum = f"{reserved_sum:.2f}"
-            display_months = product.місяці_без_руху if product.місяці_без_руху is not None else "---"
+        # Емодзі категорії
+        emoji = get_category_emoji(product.відділ, product.група, product.назва)
+        
+        # Рядок "Без руху"
+        months_str = format_months_no_sale(product.місяці_без_руху)
 
-        except (ValueError, TypeError):
-            display_available_qty = product.кількість
-            int_available_for_button = 0
-            display_user_reserved_qty = in_user_temp_list_qty
-            display_stock_sum = "---"
-            display_reserved_sum = "---"
-            display_months = "---"
+        # Форматуємо рядки для картки
+        # Залишок: 0 шт | ❌ Доступно: 0 шт
+        # або
+        # Залишок: 5 шт
+        # 🔒 Резерв: 2 шт | ✅ Доступно: 3 шт
+        
+        stock_line = f"📦 Залишок: *{stock_qty}* {unit}"
+        if is_float:
+             stock_line = f"⚖️ Залишок: *{stock_qty}* {unit}"
 
+        if stock_qty == 0:
+            reserve_line = f"❌ Доступно: 0 {unit}"
+        else:
+            total_res_display = perm_reserved + total_reserved
+            reserve_line = f"🔒 Резерв: {total_res_display} {unit} | ✅ Доступно: *{available_qty}* {unit}"
+
+        # Заповнюємо шаблон
         card_text = LEXICON.PRODUCT_CARD_TEMPLATE.format(
+            emoji_category=emoji,
             name=escape_markdown(product.назва),
-            department=escape_markdown(product.відділ),
+            article=product.артикул,
+            department=product.відділ,
             group=escape_markdown(product.група),
-            months_no_movement=escape_markdown(display_months),
-            stock_sum=escape_markdown(display_stock_sum),
-            available_qty=escape_markdown(display_available_qty),
-            reserved_qty=escape_markdown(display_user_reserved_qty),
-            reserved_sum=escape_markdown(display_reserved_sum),
+            stock_line=stock_line,
+            reserve_line=reserve_line,
+            price=price_str,
+            unit=unit,
+            stock_sum=stock_sum_str,
+            months_line=months_str,
+            user_qty=format_quantity(in_user_list_qty)
         )
         
-        keyboard = get_product_actions_kb(
-            product.id, 
-            int_available_for_button, 
-            search_query=search_query
-        )
+        # Кнопки
+        # Для кнопки "Додати все" передаємо int, якщо це можливо, або float
+        qty_for_button = int(available_qty) if available_qty == int(available_qty) else available_qty
+        keyboard = get_product_actions_kb(product.id, qty_for_button, search_query)
 
-        sent_message = None
         if message_id:
             try:
-                sent_message = await bot.edit_message_text(
+                return await bot.edit_message_text(
                     text=card_text,
                     chat_id=chat_id,
                     message_id=message_id,
@@ -101,13 +167,12 @@ async def send_or_edit_product_card(
                 )
             except TelegramBadRequest as e:
                 if "message is not modified" not in str(e):
-                    raise
+                    logger.warning(f"Failed to edit card: {e}")
+                return None
         else:
-            sent_message = await bot.send_message(chat_id, card_text, reply_markup=keyboard)
-        
-        return sent_message
+            return await bot.send_message(chat_id, card_text, reply_markup=keyboard)
 
     except Exception as e:
-        logger.error("Помилка відправки/редагування картки товару %s для %s: %s", product.id, user_id, e, exc_info=True)
+        logger.error(f"Error sending card: {e}", exc_info=True)
         await bot.send_message(chat_id, LEXICON.UNEXPECTED_ERROR)
         return None

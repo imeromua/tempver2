@@ -121,6 +121,7 @@ async def process_and_save_list(
         db_items = [{"article_name": p.product.назва, "quantity": p.quantity} for p in temp_list]
         await orm_add_saved_list(session, user_id, os.path.basename(main_list_path), main_list_path, db_items)
 
-    await orm_clear_temp_list(user_id)
+    # --- ВИПРАВЛЕНО: Передаємо поточну сесію, щоб уникнути database is locked ---
+    await orm_clear_temp_list(user_id, session=session)
 
     return main_list_path, surplus_list_path
