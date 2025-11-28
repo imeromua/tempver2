@@ -1,62 +1,112 @@
 # epicservice/handlers/archive.py
 
 import logging
+import os
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
-from sqlalchemy.exc import SQLAlchemyError
+from aiogram.types import FSInputFile, Message
 
-from database.orm import orm_get_user_lists_archive
-
-# --- ЗМІНА: Імпортуємо потрібні хелпери ---
-from keyboards.inline import get_archive_kb
-from lexicon.lexicon import LEXICON
+from config import ADMIN_IDS
+from database.orm import orm_get_user_lists_archive, orm_pack_user_files_to_zip
+from keyboards.reply import get_archives_submenu_kb, get_main_menu_kb
 
 logger = logging.getLogger(__name__)
-
 router = Router()
 
 
-@router.callback_query(F.data == "main:archive")
-async def show_archive_handler(callback: CallbackQuery, state: FSMContext):
+# ==============================================================================
+# 🗂 ПЕРЕГЛЯД АРХІВІВ
+# ==============================================================================
+
+
+@router.message(F.text == "🗂 Переглянути архіви")
+async def view_archives(message: Message):
+    """Показує список архівів користувача."""
+    user_id = message.from_user.id
+    archives = await orm_get_user_lists_archive(user_id)
+
+    if not archives:
+        await message.answer(
+            "🗂 У вас ще немає збережених списків в архіві.",
+            reply_markup=get_archives_submenu_kb(),
+        )
+        return
+
+    # Формуємо список останніх 10 архівів
+    text_lines = [f"🗂 **Ваші архіви (останні 10):**\n"]
+
+    for idx, archive in enumerate(archives[:10], start=1):
+        date_str = archive.created_at.strftime("%d.%m.%Y %H:%M")
+        text_lines.append(f"{idx}. {archive.file_name}\n   📅 {date_str}")
+
+    text_lines.append(
+        f"\n📊 Всього збережено: **{len(archives)}** списків\n"
+        f"💡 Використайте кнопку '📥 Завантажити все' для отримання повного архіву"
+    )
+
+    await message.answer("\n".join(text_lines), reply_markup=get_archives_submenu_kb())
+
+
+# ==============================================================================
+# 📥 ЗАВАНТАЖЕННЯ ОКРЕМОГО АРХІВУ (через номер)
+# ==============================================================================
+
+
+@router.message(F.text.regexp(r"^Завантажити\s+#?\d+$"))
+async def download_specific_archive(message: Message):
     """
-    Обробник для кнопки '🗂️ Архів списків'.
-    Тепер коректно редагує повідомлення та оновлює стан.
+    Завантажує конкретний архів за номером.
+    Приклад: "Завантажити 3" або "Завантажити #3"
     """
-    user_id = callback.from_user.id
+    user_id = message.from_user.id
 
     try:
-        logger.info("Користувач %s запитує свій архів.", user_id)
-        archived_lists = await orm_get_user_lists_archive(user_id)
+        # Витягуємо номер
+        number_text = message.text.replace("Завантажити", "").replace("#", "").strip()
+        archive_number = int(number_text)
 
-        if not archived_lists:
-            await callback.answer(LEXICON.NO_ARCHIVED_LISTS, show_alert=True)
+        archives = await orm_get_user_lists_archive(user_id)
+
+        if archive_number < 1 or archive_number > len(archives):
+            await message.answer(
+                f"❌ Невірний номер. Оберіть від 1 до {len(archives)}."
+            )
             return
 
-        response_text = [LEXICON.ARCHIVE_TITLE]
-        for i, lst in enumerate(archived_lists, 1):
-            created_date = lst.created_at.strftime("%d.%m.%Y о %H:%M")
-            response_text.append(
-                LEXICON.ARCHIVE_ITEM.format(
-                    i=i, file_name=lst.file_name, created_date=created_date
-                )
+        archive = archives[archive_number - 1]
+
+        if not os.path.exists(archive.file_path):
+            await message.answer(
+                "❌ Файл не знайдено. Можливо він був видалений."
             )
+            return
 
-        await callback.message.edit_text(
-            "\n".join(response_text), reply_markup=get_archive_kb(user_id)
+        # Відправляємо файл
+        await message.answer_document(
+            FSInputFile(archive.file_path),
+            caption=f"📦 {archive.file_name}\n📅 {archive.created_at.strftime('%d.%m.%Y %H:%M')}",
         )
-        # Оновлюємо ID головного повідомлення
-        await state.update_data(main_message_id=callback.message.message_id)
-        await callback.answer()
 
-    except SQLAlchemyError as e:
-        logger.error(
-            "Помилка БД при отриманні архіву для %s: %s", user_id, e, exc_info=True
-        )
-        await callback.message.answer(LEXICON.UNEXPECTED_ERROR)
+    except ValueError:
+        await message.answer("❌ Невірний формат. Використайте: Завантажити 3")
     except Exception as e:
-        logger.error(
-            "Неочікувана помилка при перегляді архіву %s: %s", user_id, e, exc_info=True
-        )
-        await callback.message.answer(LEXICON.UNEXPECTED_ERROR)
+        logger.error("Помилка завантаження архіву: %s", e, exc_info=True)
+        await message.answer("❌ Помилка завантаження файлу.")
+
+
+# ==============================================================================
+# 🔙 ПОВЕРНЕННЯ З АРХІВІВ
+# ==============================================================================
+
+
+@router.message(F.text == "🔙 Назад з архівів")
+async def back_from_archives(message: Message, state: FSMContext):
+    """Повертає з підменю архівів до головного меню."""
+    await state.clear()
+    user_id = message.from_user.id
+    is_admin = user_id in ADMIN_IDS
+
+    await message.answer(
+        "🔙 Повернення до головного меню", reply_markup=get_main_menu_kb(is_admin)
+    )

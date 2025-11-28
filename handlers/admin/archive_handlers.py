@@ -1,55 +1,81 @@
 # epicservice/handlers/admin/archive_handlers.py
 
 import logging
-import os
-import zipfile
-from datetime import datetime
-from typing import Optional
 
 from aiogram import F, Router
+from aiogram.types import Message
 
-from config import ADMIN_IDS, ARCHIVES_PATH
-from database.orm import orm_get_all_files_for_user
+from config import ADMIN_IDS
+from database.orm import orm_get_all_archives
 
-# Налаштовуємо логер
 logger = logging.getLogger(__name__)
-
-# Створюємо роутер (навіть якщо він поки порожній, це потрібно для bot.py)
 router = Router()
-router.callback_query.filter(F.from_user.id.in_(ADMIN_IDS))
 
 
-async def _pack_user_files_to_zip(user_id: int) -> Optional[str]:
+# ==============================================================================
+# 🗄 АДМІН: ПЕРЕГЛЯД АРХІВІВ ВСІХ КОРИСТУВАЧІВ
+# ==============================================================================
+
+
+@router.message(F.text == "🗄 Архіви всіх")
+async def admin_view_all_archives(message: Message):
+    """Показує статистику по всіх архівах (для адміна)."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("🚫 У вас немає доступу до цієї функції.")
+        return
+
+    archives = await orm_get_all_archives()
+
+    if not archives:
+        await message.answer("📭 Архіви відсутні.")
+        return
+
+    # Групуємо архіви по користувачах
+    user_archives = {}
+    for archive in archives:
+        user_id = archive.user_id
+        if user_id not in user_archives:
+            user_archives[user_id] = []
+        user_archives[user_id].append(archive)
+
+    # Формуємо статистику
+    text_lines = [f"🗄 **Архіви всіх користувачів:**\n"]
+
+    for user_id, user_lists in sorted(
+        user_archives.items(), key=lambda x: len(x[1]), reverse=True
+    ):
+        count = len(user_lists)
+        last_date = user_lists[0].created_at.strftime("%d.%m.%Y")
+        text_lines.append(f"• User ID: `{user_id}` — {count} списків (останній: {last_date})")
+
+    text_lines.append(f"\n📊 Всього користувачів: **{len(user_archives)}**")
+    text_lines.append(f"📊 Всього списків: **{len(archives)}**")
+
+    full_text = "\n".join(text_lines)
+    if len(full_text) > 4000:
+        full_text = full_text[:3900] + "\n... (список обрізано)"
+
+    await message.answer(full_text)
+
+
+# Це внутрішні функції, які використовуються в menu_navigation.py
+# Перенесені сюди для зручності
+
+async def _pack_user_files_to_zip(user_id: int):
     """
-    Пакує всі збережені файли користувача в один ZIP-архів.
+    Внутрішня функція для пакування файлів користувача в ZIP.
     Використовується в menu_navigation.py
     """
-    try:
-        file_paths = await orm_get_all_files_for_user(user_id)
-        if not file_paths:
-            return None
+    from database.orm import orm_pack_user_files_to_zip
 
-        os.makedirs(ARCHIVES_PATH, exist_ok=True)
-        zip_filename = (
-            f"user_{user_id}_archive_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
-        )
-        zip_path = os.path.join(ARCHIVES_PATH, zip_filename)
-
-        with zipfile.ZipFile(zip_path, "w") as zipf:
-            for file_path in file_paths:
-                if os.path.exists(file_path):
-                    zipf.write(file_path, os.path.basename(file_path))
-
-        return zip_path
-    except Exception as e:
-        logger.error(
-            "Помилка створення ZIP-архіву для користувача %s: %s",
-            user_id,
-            e,
-            exc_info=True,
-        )
-        return None
+    return await orm_pack_user_files_to_zip(user_id)
 
 
-# Старі хендлери для перегляду архівів (admin:user_archives) видалені,
-# оскільки зараз цей розділ на реконструкції в menu_navigation.
+async def _delete_user_archives(user_id: int):
+    """
+    Внутрішня функція для видалення архівів користувача.
+    Використовується в menu_navigation.py
+    """
+    from database.orm import orm_delete_user_archives
+
+    return await orm_delete_user_archives(user_id)

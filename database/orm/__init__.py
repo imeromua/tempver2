@@ -1,97 +1,104 @@
 # epicservice/database/orm/__init__.py
 
 """
-Пакет ORM (Object-Relational Mapping).
-
-Цей __init__.py файл збирає всі публічні ORM-функції з окремих модулів
-(products, temp_lists, archives, users, reports) в єдиний простір імен `database.orm`.
-
-Це дозволяє іншим частинам програми (наприклад, обробникам) імпортувати
-будь-яку ORM-функцію напряму, не знаючи про її точне розташування у файлі:
-
-    from database.orm import orm_find_products
-
-Замість:
-
-    from database.orm.products import orm_find_products
-
-Такий підхід спрощує рефакторинг та підтримку коду.
+Модуль ORM запитів для роботи з базою даних.
+Експортує всі функції для зручного імпорту.
 """
 
-from .archives import (
-    orm_add_saved_list,
-    orm_delete_all_saved_lists_sync,
-    orm_delete_lists_older_than_sync,
-    orm_get_all_collected_items_sync,
-    orm_get_all_files_for_user,
-    orm_get_user_lists_archive,
-    orm_get_users_for_warning_sync,
-    orm_get_users_with_archives,
-    orm_update_reserved_quantity,
+# --- Користувачі ---
+from .users import (
+    orm_add_user,
+    orm_get_user,
 )
+
+# --- Товари ---
 from .products import (
-    orm_find_products,
-    orm_get_all_products_sync,
+    get_available_quantity,
+    orm_deactivate_product,
+    orm_get_all_products,
+    orm_get_product_by_article,
     orm_get_product_by_id,
-    orm_smart_import,
-    orm_subtract_collected,
+    orm_get_products_count,
+    orm_get_total_stock_value,
+    orm_search_products_by_department,
+    orm_search_products_fuzzy,
+    orm_update_product_quantity,
+    orm_update_product_reserved,
+    validate_product_quantity,
 )
+
+# --- Тимчасові списки ---
 from .temp_lists import (
     orm_add_item_to_temp_list,
     orm_clear_temp_list,
-    orm_delete_temp_list_item,
-    orm_get_all_temp_list_items_sync,
+    orm_delete_item_from_temp_list,
     orm_get_temp_list,
     orm_get_temp_list_department,
-    orm_get_temp_list_item_quantity,
+    orm_get_temp_list_item,
+    orm_get_temp_list_summary,
     orm_get_total_temp_reservation_for_product,
-    orm_get_users_with_active_lists,
-    orm_update_temp_list_item_quantity,
+    orm_update_item_quantity,
 )
-from .users import orm_get_all_users_sync, orm_upsert_user
 
-# --- ЗМІНА ---
-# ВИДАЛЕНО: Імпорти з модуля звітів, оскільки файл reports.py видалено
-# from .reports import (
-#     orm_get_stock_status_sync,
-#     orm_get_collection_status_sync
-# )
-# --- КІНЕЦЬ ЗМІНИ ---
+# --- Архіви ---
+from .archives import (
+    orm_cleanup_old_archives,
+    orm_delete_saved_list,
+    orm_delete_user_archives,
+    orm_get_all_archives,
+    orm_get_archives_stats,
+    orm_get_saved_list_items,
+    orm_get_user_lists_archive,
+    orm_pack_user_files_to_zip,
+)
 
-# Явно визначаємо, що саме буде експортуватися
+# --- Аналітика ---
+from .analytics import (
+    orm_get_all_collected_items_sync,
+    orm_get_department_stats,
+    orm_get_top_products,
+    orm_get_user_activity_stats,
+)
+
 __all__ = [
-    # products
-    "orm_find_products",
+    # Користувачі
+    "orm_add_user",
+    "orm_get_user",
+    # Товари
     "orm_get_product_by_id",
-    "orm_smart_import",
-    "orm_subtract_collected",
-    "orm_get_all_products_sync",
-    # temp_lists
-    "orm_clear_temp_list",
-    "orm_add_item_to_temp_list",
-    "orm_delete_temp_list_item",
+    "orm_get_product_by_article",
+    "orm_get_all_products",
+    "orm_search_products_fuzzy",
+    "orm_search_products_by_department",
+    "orm_update_product_quantity",
+    "orm_update_product_reserved",
+    "orm_deactivate_product",
+    "orm_get_products_count",
+    "orm_get_total_stock_value",
+    "validate_product_quantity",
+    "get_available_quantity",
+    # Тимчасові списки
     "orm_get_temp_list",
     "orm_get_temp_list_department",
-    "orm_get_temp_list_item_quantity",
+    "orm_get_temp_list_item",
+    "orm_add_item_to_temp_list",
+    "orm_update_item_quantity",
+    "orm_delete_item_from_temp_list",
+    "orm_clear_temp_list",
     "orm_get_total_temp_reservation_for_product",
-    "orm_get_all_temp_list_items_sync",
-    "orm_get_users_with_active_lists",
-    "orm_update_temp_list_item_quantity",
-    # archives
-    "orm_add_saved_list",
-    "orm_update_reserved_quantity",
+    "orm_get_temp_list_summary",
+    # Архіви
     "orm_get_user_lists_archive",
-    "orm_get_all_files_for_user",
-    "orm_get_users_with_archives",
+    "orm_get_all_archives",
+    "orm_get_saved_list_items",
+    "orm_delete_user_archives",
+    "orm_delete_saved_list",
+    "orm_pack_user_files_to_zip",
+    "orm_cleanup_old_archives",
+    "orm_get_archives_stats",
+    # Аналітика
     "orm_get_all_collected_items_sync",
-    "orm_delete_all_saved_lists_sync",
-    "orm_delete_lists_older_than_sync",
-    "orm_get_users_for_warning_sync",
-    # users
-    "orm_upsert_user",
-    "orm_get_all_users_sync",
-    # --- ЗМІНА ---
-    # ВИДАЛЕНО: Назви функцій звітів зі списку __all__
-    # "orm_get_stock_status_sync", "orm_get_collection_status_sync"
+    "orm_get_top_products",
+    "orm_get_department_stats",
+    "orm_get_user_activity_stats",
 ]
-# --- КІНЕЦЬ ЗМІНИ ---

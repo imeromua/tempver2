@@ -4,187 +4,230 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from config import ADMIN_IDS, ARCHIVES_PATH
-from database.orm import (
-    orm_get_all_products_sync,
-    orm_get_all_temp_list_items_sync,
-    orm_subtract_collected,
-)
-from keyboards.reply import get_admin_menu_kb  # <--- Нова клавіатура
+from database.engine import sync_session
+from database.models import Product
+from keyboards.reply import get_admin_menu_kb
 
 logger = logging.getLogger(__name__)
-
 router = Router()
-router.message.filter(F.from_user.id.in_(ADMIN_IDS))
 
 
-# Стан для завантаження файлу "віднімання"
 class AdminReportStates(StatesGroup):
     waiting_for_subtract_file = State()
 
 
-# --- ДОПОМІЖНІ ФУНКЦІЇ (Використовуються також в menu_navigation) ---
+# ==============================================================================
+# 📊 ГЕНЕРАЦІЯ ЗВІТУ ПО ЗАЛИШКАХ (СИНХРОННА)
+# ==============================================================================
 
 
-def _create_stock_report_sync() -> Optional[str]:
+def _create_stock_report_sync() -> str:
     """
-    Генерує Excel-файл із поточними залишками (включно з резервами).
+    СИНХРОННА функція для генерації звіту по залишках.
+    Використовується в executor.
+    
+    Returns:
+        Шлях до створеного файлу або None
     """
     try:
-        products = orm_get_all_products_sync()
-        temp_list_items = orm_get_all_temp_list_items_sync()
-
-        # Рахуємо тимчасові резерви "на льоту"
-        temp_reservations = {}
-        for item in temp_list_items:
-            temp_reservations[item.product_id] = (
-                temp_reservations.get(item.product_id, 0) + item.quantity
+        with sync_session() as session:
+            # Отримуємо всі активні товари
+            from sqlalchemy import select
+            
+            result = session.execute(
+                select(Product).where(Product.активний == True).order_by(Product.відділ, Product.артикул)
             )
+            products = result.scalars().all()
 
-        report_data = []
-        for product in products:
-            try:
-                stock_qty = float(str(product.кількість).replace(",", "."))
-            except (ValueError, TypeError):
-                stock_qty = 0
+            if not products:
+                logger.warning("Немає товарів для експорту")
+                return None
 
-            # Резерв = Постійний (в базі) + Тимчасовий (у кошиках юзерів)
-            reserved = (product.відкладено or 0) + temp_reservations.get(product.id, 0)
-            available = stock_qty - reserved
-
-            # У звіті показуємо тільки реальні цифри
-            report_data.append(
-                {
-                    "Відділ": product.відділ,
-                    "Група": product.група,
+            # Формуємо DataFrame
+            data = []
+            for product in products:
+                data.append({
                     "Артикул": product.артикул,
                     "Назва": product.назва,
-                    "Всього на складі": stock_qty,
-                    "В резерві": reserved,
-                    "Доступно": available,
+                    "Відділ": product.відділ,
+                    "Група": product.група,
+                    "Кількість": product.кількість,
+                    "Відкладено": product.відкладено or 0,
                     "Ціна": product.ціна or 0.0,
-                    "Сума (Доступно)": available * (product.ціна or 0.0),
-                }
-            )
+                    "Сума залишку": product.сума_залишку or 0.0,
+                    "Місяці без руху": product.місяці_без_руху or 0,
+                })
 
-        df = pd.DataFrame(report_data)
-        os.makedirs(ARCHIVES_PATH, exist_ok=True)
-        report_path = os.path.join(
-            ARCHIVES_PATH, f"stock_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        )
-        df.to_excel(report_path, index=False)
-        return report_path
+            df = pd.DataFrame(data)
+
+            # Створюємо файл
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"stock_report_{timestamp}.xlsx"
+            filepath = os.path.join(ARCHIVES_PATH, filename)
+            os.makedirs(ARCHIVES_PATH, exist_ok=True)
+
+            df.to_excel(filepath, index=False, engine="openpyxl")
+
+            logger.info("Створено звіт по залишках: %s (%s товарів)", filename, len(products))
+            return filepath
+
     except Exception as e:
-        logger.error("Помилка створення звіту про залишки: %s", e, exc_info=True)
+        logger.error("Помилка створення звіту по залишках: %s", e, exc_info=True)
         return None
 
 
-def _parse_and_validate_subtract_file(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """
-    Валідує та нормалізує файл для віднімання залишків.
-    Шукає колонки 'Артикул' та 'Кількість'.
-    """
-    try:
-        # 1. Приводимо заголовки до нижнього регістру
-        df.columns = [str(c).lower().strip() for c in df.columns]
-
-        # 2. Шукаємо ключові слова
-        col_map = {}
-        for col in df.columns:
-            if col in ["артикул", "art", "code", "sku"]:
-                col_map["article"] = col
-            elif col in ["кількість", "qty", "count", "k"]:
-                col_map["qty"] = col
-
-        # Якщо знайшли явні колонки
-        if "article" in col_map and "qty" in col_map:
-            df_prepared = df[[col_map["article"], col_map["qty"]]].copy()
-            df_prepared.columns = ["артикул", "кількість"]
-            # Чистимо артикули
-            df_prepared["артикул"] = (
-                df_prepared["артикул"].astype(str).str.replace(r"\.0$", "", regex=True)
-            )
-            return df_prepared
-
-        # 3. Якщо колонок немає, але їх всього 2 - припускаємо, що це [Артикул, Кількість]
-        if len(df.columns) == 2:
-            # Створюємо новий DF, де перший рядок (header) стає даними, якщо там цифри
-            # Але простіше просто перейменувати
-            df.columns = ["артикул", "кількість"]
-            df["артикул"] = (
-                df["артикул"].astype(str).str.replace(r"\.0$", "", regex=True)
-            )
-            return df
-
-    except Exception as e:
-        logger.error(f"Помилка парсингу файлу для віднімання: {e}")
-
-    return None
-
-
-# --- ОБРОБНИК ФАЙЛУ (Triggered by state from menu_navigation) ---
+# ==============================================================================
+# 📉 ІМПОРТ ЗІБРАНОГО (ВІДНІМАННЯ)
+# ==============================================================================
 
 
 @router.message(AdminReportStates.waiting_for_subtract_file, F.document)
 async def process_subtract_file(message: Message, state: FSMContext, bot: Bot):
     """
-    Приймає файл "Імпорт зібраного" та віднімає ці кількості від складу.
+    Обробляє файл з зібраними товарами та віднімає їх від залишків.
     """
-    await message.answer("⏳ Обробляю файл списання...")
+    if message.from_user.id not in ADMIN_IDS:
+        return
 
-    # Видаляємо попереднє повідомлення, якщо його ID збережено (не обов'язково, але чисто)
-    data = await state.get_data()
-    if msg_id := data.get("main_message_id"):
-        try:
-            await bot.delete_message(message.chat.id, msg_id)
-        except Exception:
-            pass
+    document = message.document
 
-    await state.clear()
+    if not document.file_name.endswith((".xlsx", ".xls")):
+        await message.answer("❌ Невірний формат. Надішліть Excel файл (.xlsx)")
+        return
 
-    temp_file_path = f"temp_subtract_{message.from_user.id}.xlsx"
+    msg = await message.answer("⏳ Обробка файлу...")
 
     try:
-        await bot.download(message.document, destination=temp_file_path)
+        # Завантажуємо файл
+        file = await bot.get_file(document.file_id)
+        file_path = os.path.join(
+            ARCHIVES_PATH, f"subtract_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        os.makedirs(ARCHIVES_PATH, exist_ok=True)
+
+        await bot.download_file(file.file_path, file_path)
 
         # Читаємо Excel
-        df = await asyncio.to_thread(pd.read_excel, temp_file_path)
+        loop = asyncio.get_running_loop()
+        df = await loop.run_in_executor(None, pd.read_excel, file_path)
 
-        # Валідуємо
-        standardized_df = _parse_and_validate_subtract_file(df)
-
-        if standardized_df is None:
-            await message.answer(
-                "❌ **Помилка формату!**\n"
-                "Файл повинен мати 2 колонки: `Артикул` та `Кількість`.",
-                reply_markup=get_admin_menu_kb(),
+        # Перевірка колонок
+        if "Артикул" not in df.columns or "Кількість" not in df.columns:
+            await msg.edit_text(
+                "❌ У файлі мають бути колонки: **Артикул** та **Кількість**"
             )
-        else:
-            # Виконуємо віднімання (ORM)
-            result = await orm_subtract_collected(standardized_df)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            await state.clear()
+            return
 
-            report_text = (
-                "✅ **Списання завершено!**\n"
-                "━━━━━━━━━━━━━━━━\n"
-                f"📉 Опрацьовано: {result['processed']}\n"
-                f"❓ Не знайдено: {result['not_found']}\n"
-                f"⚠️ Помилки: {result['errors']}"
-            )
-            await message.answer(report_text, reply_markup=get_admin_menu_kb())
+        # Віднімаємо від залишків
+        from database.engine import async_session
+        from database.models import StockHistory
+        from sqlalchemy import select
+
+        updated_count = 0
+        not_found = []
+        errors = []
+
+        async with async_session() as session:
+            for index, row in df.iterrows():
+                try:
+                    article = str(row["Артикул"]).strip()
+                    quantity_to_subtract = float(str(row["Кількість"]).replace(",", "."))
+
+                    # Шукаємо товар
+                    result = await session.execute(
+                        select(Product).where(Product.артикул == article)
+                    )
+                    product = result.scalar_one_or_none()
+
+                    if not product:
+                        not_found.append(article)
+                        continue
+
+                    # Парсимо поточну кількість
+                    try:
+                        current_qty = float(str(product.кількість).replace(",", "."))
+                    except ValueError:
+                        errors.append(f"{article}: невірний формат кількості")
+                        continue
+
+                    # Віднімаємо
+                    new_qty = max(0, current_qty - quantity_to_subtract)
+                    old_qty_str = product.кількість
+                    product.кількість = str(new_qty).replace(".", ",")
+
+                    # Записуємо в історію
+                    history = StockHistory(
+                        product_id=product.id,
+                        articul=article,
+                        old_quantity=old_qty_str,
+                        new_quantity=product.кількість,
+                        change_source="user_list",
+                    )
+                    session.add(history)
+
+                    updated_count += 1
+
+                except Exception as row_error:
+                    errors.append(f"Рядок {index + 2}: {str(row_error)}")
+                    logger.error("Помилка обробки рядка %s: %s", index + 2, row_error)
+
+            await session.commit()
+
+        # Видаляємо тимчасовий файл
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        # Результат
+        result_text = (
+            f"✅ **Імпорт зібраного завершено!**\n\n"
+            f"🔄 Оновлено товарів: **{updated_count}**"
+        )
+
+        if not_found:
+            result_text += f"\n❌ Не знайдено: **{len(not_found)}**"
+            if len(not_found) <= 5:
+                result_text += "\n• " + "\n• ".join(not_found[:5])
+
+        if errors:
+            result_text += f"\n⚠️ Помилок: **{len(errors)}**"
+
+        await msg.edit_text(result_text)
+        await state.clear()
+
+        logger.info(
+            "Імпорт зібраного: оновлено %s, не знайдено %s, помилок %s",
+            updated_count,
+            len(not_found),
+            len(errors),
+        )
 
     except Exception as e:
-        logger.error("Critical subtract error: %s", e, exc_info=True)
-        await message.answer(
-            f"❌ Критична помилка: {e}", reply_markup=get_admin_menu_kb()
-        )
-    finally:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        logger.error("Критична помилка імпорту зібраного: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Помилка обробки файлу:\n{str(e)}")
+        await state.clear()
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+@router.message(AdminReportStates.waiting_for_subtract_file)
+async def invalid_subtract_file(message: Message):
+    """Обробляє невірний тип повідомлення."""
+    await message.answer(
+        "❌ Будь ласка, надішліть Excel файл з колонками:\n"
+        "• **Артикул**\n"
+        "• **Кількість**\n\n"
+        "Або скасуйте командою /reset"
+    )
+# ==============================================================================

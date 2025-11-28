@@ -3,143 +3,187 @@
 import asyncio
 import logging
 import os
-from functools import partial  # <--- ДОДАНО для передачі аргументів
+from datetime import datetime
 
-from aiogram import Bot, F, Router
-from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile
+import pandas as pd
+from aiogram import F, Router
+from aiogram.types import FSInputFile, Message
 
-from config import ADMIN_IDS
+from config import ADMIN_IDS, ARCHIVES_PATH
 from database.orm.analytics import (
-    get_collected_history_dataframe,
-    get_products_dataframe,
-    get_stock_history_dataframe,
+    orm_get_all_collected_items_sync,
+    orm_get_department_stats,
+    orm_get_general_stats,
 )
-from handlers.admin.core import _show_admin_panel
-from utils.excel_renderer import save_dataframe_to_excel
+from handlers.admin.report_handlers import _create_stock_report_sync
 
 logger = logging.getLogger(__name__)
 router = Router()
-router.callback_query.filter(F.from_user.id.in_(ADMIN_IDS))
 
 
-async def _generate_and_send_report(
-    callback: CallbackQuery,
-    state: FSMContext,  # <--- ДОДАНО state
-    data_getter_func,
-    file_prefix: str,
-    caption: str,
-    bot: Bot,
-    **kwargs,
-):
-    """Універсальна функція для генерації та відправки звіту."""
-    await callback.message.edit_text(f"⏳ Генерую звіт: {caption}...")
+# ==============================================================================
+# 📤 ЕКСПОРТ ЗАЛИШКІВ
+# ==============================================================================
 
-    loop = asyncio.get_running_loop()
 
-    # --- ВИПРАВЛЕННЯ 1: Використовуємо partial для передачі kwargs ---
-    func = partial(data_getter_func, **kwargs)
+@router.message(F.text == "📤 Експорт залишків")
+async def export_stock(message: Message):
+    """Експортує поточні залишки складу в Excel."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("🚫 У вас немає доступу до цієї функції.")
+        return
+
+    await message.answer("📤 Формую звіт по залишках...")
 
     try:
-        # Запускаємо синхронну функцію в окремому потоці
-        df = await loop.run_in_executor(None, func)
+        loop = asyncio.get_running_loop()
+        report_path = await loop.run_in_executor(None, _create_stock_report_sync)
 
-        if df.empty:
-            await callback.message.edit_text("📂 Даних для звіту не знайдено.")
-            await asyncio.sleep(2)
-            # --- ВИПРАВЛЕННЯ 2: Передаємо реальний state ---
-            await _show_admin_panel(callback, state, bot)
-            return
-
-        # Зберігаємо файл
-        file_path = await loop.run_in_executor(
-            None, save_dataframe_to_excel, df, file_prefix
-        )
-
-        if file_path:
-            # Відправляємо файл
-            await callback.message.answer_document(
-                FSInputFile(file_path), caption=f"✅ {caption}"
+        if report_path and os.path.exists(report_path):
+            await message.answer_document(
+                FSInputFile(report_path),
+                caption=f"📊 **Звіт по залишках**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}",
             )
-            # Видаляємо тимчасовий файл
-            os.remove(file_path)
 
-            # Видаляємо повідомлення "Генерую..." і показуємо меню
-            await callback.message.delete()
-            await _show_admin_panel(callback, state, bot)
+            # Видаляємо файл після відправки
+            os.remove(report_path)
         else:
-            await callback.message.edit_text("❌ Помилка створення файлу.")
-            await asyncio.sleep(2)
-            await _show_admin_panel(callback, state, bot)
+            await message.answer("❌ Помилка створення звіту. Можливо, немає товарів.")
 
     except Exception as e:
-        logger.error(f"Export error: {e}", exc_info=True)
-        await callback.message.edit_text(f"❌ Сталася помилка: {e}")
-        await asyncio.sleep(3)
-        await _show_admin_panel(callback, state, bot)
+        logger.error("Помилка експорту залишків: %s", e, exc_info=True)
+        await message.answer(f"❌ Помилка експорту:\n{str(e)}")
 
 
-# --- Обробники кнопок (Тепер всі приймають state) ---
+# ==============================================================================
+# 📋 ЕКСПОРТ ЗІБРАНОГО
+# ==============================================================================
 
 
-@router.callback_query(F.data == "export:db_full")
-async def export_db_full(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await _generate_and_send_report(
-        callback,
-        state,
-        get_products_dataframe,
-        "db_full",
-        "Вся база товарів",
-        bot,
-        filter_type="all",
-    )
+@router.message(F.text == "📋 Експорт зібраного")
+async def export_collected(message: Message):
+    """Експортує всі зібрані товари з усіх збережених списків."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("🚫 У вас немає доступу до цієї функції.")
+        return
+
+    await message.answer("📋 Формую звіт по зібраному...")
+
+    try:
+        loop = asyncio.get_running_loop()
+        items = await loop.run_in_executor(None, orm_get_all_collected_items_sync)
+
+        if not items:
+            await message.answer("📭 Зібраних товарів ще немає.")
+            return
+
+        # Формуємо DataFrame
+        df = pd.DataFrame(items)
+
+        # Перейменовуємо колонки для зручності
+        column_mapping = {
+            "article": "Артикул",
+            "name": "Назва",
+            "quantity": "Кількість",
+            "user_id": "User ID",
+            "created_at": "Дата",
+        }
+        df = df.rename(columns=column_mapping)
+
+        # Форматуємо дату
+        if "Дата" in df.columns:
+            df["Дата"] = pd.to_datetime(df["Дата"]).dt.strftime("%d.%m.%Y %H:%M")
+
+        # Створюємо файл
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"collected_report_{timestamp}.xlsx"
+        filepath = os.path.join(ARCHIVES_PATH, filename)
+        os.makedirs(ARCHIVES_PATH, exist_ok=True)
+
+        await loop.run_in_executor(None, lambda: df.to_excel(filepath, index=False, engine="openpyxl"))
+
+        # Відправляємо файл
+        await message.answer_document(
+            FSInputFile(filepath),
+            caption=f"📋 **Звіт по зібраним товарам**\n📊 Всього позицій: {len(items)}",
+        )
+
+        # Видаляємо файл
+        os.remove(filepath)
+
+        logger.info("Експортовано зібрані товари: %s позицій", len(items))
+
+    except Exception as e:
+        logger.error("Помилка експорту зібраного: %s", e, exc_info=True)
+        await message.answer(f"❌ Помилка експорту:\n{str(e)}")
 
 
-@router.callback_query(F.data == "export:db_active")
-async def export_db_active(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await _generate_and_send_report(
-        callback,
-        state,
-        get_products_dataframe,
-        "db_active",
-        "Тільки активні товари",
-        bot,
-        filter_type="active",
-    )
+# ==============================================================================
+# 📊 ЕКСПОРТ СТАТИСТИКИ
+# ==============================================================================
 
 
-@router.callback_query(F.data == "export:no_move")
-async def export_no_move(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await _generate_and_send_report(
-        callback,
-        state,
-        get_products_dataframe,
-        "db_stagnant",
-        "Товари без руху (3+ міс)",
-        bot,
-        filter_type="no_move",
-    )
+@router.message(F.text == "📊 Експорт статистики")
+async def export_statistics(message: Message):
+    """Експортує загальну статистику по системі."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("🚫 У вас немає доступу до цієї функції.")
+        return
 
+    await message.answer("📊 Формую статистику...")
 
-@router.callback_query(F.data == "export:collected")
-async def export_collected(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await _generate_and_send_report(
-        callback,
-        state,
-        get_collected_history_dataframe,
-        "collected_history",
-        "Історія зборів",
-        bot,
-    )
+    try:
+        loop = asyncio.get_running_loop()
 
+        # Отримуємо загальну статистику
+        general_stats = await loop.run_in_executor(None, orm_get_general_stats)
 
-@router.callback_query(F.data == "export:history")
-async def export_history(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await _generate_and_send_report(
-        callback,
-        state,
-        get_stock_history_dataframe,
-        "stock_changes",
-        "Історія змін залишків",
-        bot,
-    )
+        # Статистика по відділам
+        department_stats = await loop.run_in_executor(None, orm_get_department_stats)
+
+        # Створюємо Excel з кількома листами
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"statistics_{timestamp}.xlsx"
+        filepath = os.path.join(ARCHIVES_PATH, filename)
+        os.makedirs(ARCHIVES_PATH, exist_ok=True)
+
+        with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+            # Лист 1: Загальна статистика
+            general_df = pd.DataFrame([general_stats])
+            general_df = general_df.rename(
+                columns={
+                    "products_count": "Кількість товарів",
+                    "total_value": "Загальна вартість",
+                    "users_count": "Кількість користувачів",
+                    "saved_lists_count": "Збережених списків",
+                    "temp_items_count": "Поточних позицій",
+                }
+            )
+            general_df.to_excel(writer, sheet_name="Загальна статистика", index=False)
+
+            # Лист 2: По відділам
+            if department_stats:
+                dept_df = pd.DataFrame(department_stats)
+                dept_df = dept_df.rename(
+                    columns={
+                        "department": "Відділ",
+                        "product_count": "Кількість товарів",
+                        "total_value": "Загальна вартість",
+                    }
+                )
+                dept_df.to_excel(writer, sheet_name="По відділам", index=False)
+
+        # Відправляємо файл
+        await message.answer_document(
+            FSInputFile(filepath),
+            caption=f"📊 **Статистика системи**\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        )
+
+        # Видаляємо файл
+        os.remove(filepath)
+
+        logger.info("Експортовано статистику")
+
+    except Exception as e:
+        logger.error("Помилка експорту статистики: %s", e, exc_info=True)
+        await message.answer(f"❌ Помилка експорту:\n{str(e)}")

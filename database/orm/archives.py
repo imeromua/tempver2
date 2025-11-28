@@ -3,212 +3,313 @@
 import logging
 import os
 import shutil
-from datetime import datetime, timedelta
+import zipfile
+from datetime import datetime
+from typing import List, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import ARCHIVES_PATH
-from database.engine import async_session, sync_session
-from database.models import Product, SavedList, SavedListItem
+from database.engine import async_session
+from database.models import SavedList, SavedListItem
 
-# Імпортуємо допоміжну функцію з нового модуля
-from database.orm.products import _extract_article
-
-# Налаштовуємо логер для цього модуля
 logger = logging.getLogger(__name__)
 
 
-# --- Асинхронні функції для роботи з архівами ---
+# ==============================================================================
+# 📂 ОТРИМАННЯ АРХІВІВ
+# ==============================================================================
 
 
-# ВИПРАВЛЕНО: Змінено порядок аргументів для відповідності конвенції
-async def orm_add_saved_list(
-    session, user_id: int, file_name: str, file_path: str, items: list[dict]
-):
+async def orm_get_user_lists_archive(user_id: int) -> List[SavedList]:
     """
-    Додає інформацію про новий збережений список до бази даних.
-
-    Створює запис у `SavedList` та пов'язані з ним записи у `SavedListItem`.
-    Ця функція повинна виконуватися в межах існуючої транзакції.
-
-    Args:
-        session: Екземпляр асинхронної сесії SQLAlchemy.
-        user_id: ID користувача, що зберіг список.
-        file_name: Ім'я згенерованого Excel-файлу.
-        file_path: Повний шлях до згенерованого файлу.
-        items: Список словників з даними про товари для збереження.
+    Отримує всі збережені списки користувача, відсортовані за датою (новіші спочатку).
     """
-    new_list = SavedList(user_id=user_id, file_name=file_name, file_path=file_path)
-    session.add(new_list)
-    await session.flush()  # Отримуємо ID для new_list
-
-    for item in items:
-        list_item = SavedListItem(
-            list_id=new_list.id,
-            article_name=item["article_name"],
-            quantity=item["quantity"],
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(SavedList)
+                .where(SavedList.user_id == user_id)
+                .order_by(SavedList.created_at.desc())
+            )
+            return list(result.scalars().all())
+    except Exception as e:
+        logger.error(
+            "Помилка отримання архівів для user_id %s: %s", user_id, e, exc_info=True
         )
-        session.add(list_item)
+        return []
 
 
-async def orm_update_reserved_quantity(session, items: list[dict]):
+async def orm_get_all_archives() -> List[SavedList]:
     """
-    Оновлює кількість зарезервованих товарів (`відкладено`).
+    Отримує всі збережені списки всіх користувачів (для адміна).
     """
-    # для імпорту потрібна orm_get_product_by_id, але щоб уникнути
-    # циклічного імпорту, простіше реалізувати логіку тут
-    from database.orm.products import orm_get_product_by_id
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(SavedList).order_by(SavedList.created_at.desc())
+            )
+            return list(result.scalars().all())
+    except Exception as e:
+        logger.error("Помилка отримання всіх архівів: %s", e, exc_info=True)
+        return []
 
-    for item in items:
-        product = await orm_get_product_by_id(
-            session, item["product_id"], for_update=True
+
+async def orm_get_saved_list_items(list_id: int) -> List[SavedListItem]:
+    """
+    Отримує всі позиції конкретного збереженого списку.
+    """
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(SavedListItem).where(SavedListItem.list_id == list_id)
+            )
+            return list(result.scalars().all())
+    except Exception as e:
+        logger.error(
+            "Помилка отримання позицій списку ID %s: %s", list_id, e, exc_info=True
         )
-        if product:
-            product.відкладено = (product.відкладено or 0) + item["quantity"]
+        return []
 
 
-async def orm_get_user_lists_archive(user_id: int) -> list[SavedList]:
+# ==============================================================================
+# 🗑️ ВИДАЛЕННЯ АРХІВІВ
+# ==============================================================================
+
+
+async def orm_delete_user_archives(user_id: int) -> bool:
     """
-    Отримує архів збережених списків для конкретного користувача.
+    Видаляє всі збережені списки користувача та їх файли.
     """
-    async with async_session() as session:
-        query = (
-            select(SavedList)
-            .where(SavedList.user_id == user_id)
-            .order_by(SavedList.created_at.desc())
+    try:
+        async with async_session() as session:
+            # Отримуємо всі списки для видалення файлів
+            result = await session.execute(
+                select(SavedList).where(SavedList.user_id == user_id)
+            )
+            lists = result.scalars().all()
+
+            # Видаляємо файли
+            for saved_list in lists:
+                if saved_list.file_path and os.path.exists(saved_list.file_path):
+                    try:
+                        os.remove(saved_list.file_path)
+                        logger.info("Видалено файл: %s", saved_list.file_path)
+                    except Exception as file_error:
+                        logger.warning(
+                            "Не вдалося видалити файл %s: %s",
+                            saved_list.file_path,
+                            file_error,
+                        )
+
+            # Видаляємо записи з БД
+            await session.execute(delete(SavedList).where(SavedList.user_id == user_id))
+            await session.commit()
+
+            logger.info("Видалено всі архіви для user_id %s", user_id)
+            return True
+
+    except Exception as e:
+        logger.error(
+            "Помилка видалення архівів user_id %s: %s", user_id, e, exc_info=True
         )
-        result = await session.execute(query)
-        return result.scalars().all()
+        return False
 
 
-async def orm_get_all_files_for_user(user_id: int) -> list[str]:
+async def orm_delete_saved_list(list_id: int) -> bool:
     """
-    Отримує шляхи до всіх збережених файлів-списків для користувача.
+    Видаляє конкретний збережений список та його файл.
     """
-    async with async_session() as session:
-        query = select(SavedList.file_path).where(SavedList.user_id == user_id)
-        result = await session.execute(query)
-        return result.scalars().all()
+    try:
+        async with async_session() as session:
+            # Отримуємо список для видалення файлу
+            result = await session.execute(
+                select(SavedList).where(SavedList.id == list_id)
+            )
+            saved_list = result.scalar_one_or_none()
 
+            if not saved_list:
+                logger.warning("Список ID %s не знайдено", list_id)
+                return False
 
-async def orm_get_users_with_archives() -> list[tuple[int, int]]:
-    """
-    Отримує список користувачів, які мають хоча б один збережений список.
-    """
-    async with async_session() as session:
-        query = (
-            select(SavedList.user_id, func.count(SavedList.id).label("lists_count"))
-            .group_by(SavedList.user_id)
-            .order_by(func.count(SavedList.id).desc())
-        )
-        result = await session.execute(query)
-        return result.all()
-
-
-# --- Синхронні функції для звітів та фонових завдань ---
-
-
-def orm_get_all_collected_items_sync() -> list[dict]:
-    """
-    Синхронно збирає зведені дані про всі товари у всіх збережених списках.
-    """
-    with sync_session() as session:
-        all_products = {
-            p.артикул: p for p in session.execute(select(Product)).scalars()
-        }
-        all_saved_items = session.execute(select(SavedListItem)).scalars().all()
-
-        collected_data = {}
-        for item in all_saved_items:
-            article = _extract_article(item.article_name)
-            if not article or article not in all_products:
-                continue
-
-            product_info = all_products[article]
-
-            if article in collected_data:
-                collected_data[article]["quantity"] += item.quantity
-            else:
-                collected_data[article] = {
-                    "department": product_info.відділ,
-                    "group": product_info.група,
-                    "name": product_info.назва,
-                    "quantity": item.quantity,
-                }
-
-        return list(collected_data.values())
-
-
-def orm_delete_all_saved_lists_sync() -> int:
-    """
-    Синхронно видаляє абсолютно всі збережені списки, їхні позиції та файли.
-    """
-    with sync_session() as session:
-        lists_count = session.execute(select(func.count(SavedList.id))).scalar_one()
-        if lists_count == 0:
-            return 0
-
-        session.execute(delete(SavedListItem))
-        session.execute(delete(SavedList))
-        session.commit()
-
-        if os.path.exists(ARCHIVES_PATH):
-            shutil.rmtree(ARCHIVES_PATH)
-
-        return lists_count
-
-
-def orm_get_users_for_warning_sync(hours_warn: int, hours_expire: int) -> set[int]:
-    """
-    Синхронно знаходить користувачів для попередження про видалення списків.
-    """
-    with sync_session() as session:
-        warn_time = datetime.now() - timedelta(hours=hours_warn)
-        expire_time = datetime.now() - timedelta(hours=hours_expire)
-
-        query = (
-            select(SavedList.user_id)
-            .where(SavedList.created_at < warn_time, SavedList.created_at > expire_time)
-            .distinct()
-        )
-        return set(session.execute(query).scalars().all())
-
-
-def orm_delete_lists_older_than_sync(hours: int) -> int:
-    """
-    Синхронно видаляє списки та файли, які старші за вказану кількість годин.
-    """
-    with sync_session() as session:
-        expire_time = datetime.now() - timedelta(hours=hours)
-
-        lists_to_delete = (
-            session.execute(select(SavedList).where(SavedList.created_at < expire_time))
-            .scalars()
-            .all()
-        )
-
-        if not lists_to_delete:
-            return 0
-
-        count = len(lists_to_delete)
-        list_ids_to_delete = [lst.id for lst in lists_to_delete]
-
-        for lst in lists_to_delete:
-            if os.path.exists(lst.file_path):
+            # Видаляємо файл
+            if saved_list.file_path and os.path.exists(saved_list.file_path):
                 try:
-                    os.remove(lst.file_path)
-                    user_dir = os.path.dirname(lst.file_path)
-                    if not os.listdir(user_dir):
-                        os.rmdir(user_dir)
-                except OSError as e:
-                    logger.error(
-                        f"Помилка видалення архівного файлу або папки {lst.file_path}: {e}"
+                    os.remove(saved_list.file_path)
+                    logger.info("Видалено файл: %s", saved_list.file_path)
+                except Exception as file_error:
+                    logger.warning(
+                        "Не вдалося видалити файл %s: %s",
+                        saved_list.file_path,
+                        file_error,
                     )
 
-        session.execute(
-            delete(SavedListItem).where(SavedListItem.list_id.in_(list_ids_to_delete))
-        )
-        session.execute(delete(SavedList).where(SavedList.id.in_(list_ids_to_delete)))
-        session.commit()
+            # Видаляємо запис з БД (каскадно видаляться і items)
+            await session.execute(delete(SavedList).where(SavedList.id == list_id))
+            await session.commit()
 
-        return count
+            logger.info("Видалено список ID %s", list_id)
+            return True
+
+    except Exception as e:
+        logger.error("Помилка видалення списку ID %s: %s", list_id, e, exc_info=True)
+        return False
+
+
+# ==============================================================================
+# 📦 СТВОРЕННЯ ZIP АРХІВУ
+# ==============================================================================
+
+
+async def orm_pack_user_files_to_zip(user_id: int) -> Optional[str]:
+    """
+    Пакує всі файли користувача в один ZIP архів.
+    Повертає шлях до створеного ZIP файлу або None при помилці.
+    """
+    try:
+        # Отримуємо всі списки користувача
+        saved_lists = await orm_get_user_lists_archive(user_id)
+
+        if not saved_lists:
+            logger.info("Користувач %s не має архівів для пакування", user_id)
+            return None
+
+        # Створюємо ZIP архів
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"user_{user_id}_archive_{timestamp}.zip"
+        zip_path = os.path.join(ARCHIVES_PATH, zip_filename)
+
+        os.makedirs(ARCHIVES_PATH, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            files_added = 0
+
+            for saved_list in saved_lists:
+                if saved_list.file_path and os.path.exists(saved_list.file_path):
+                    # Додаємо файл до архіву з оригінальною назвою
+                    arcname = os.path.basename(saved_list.file_path)
+                    zipf.write(saved_list.file_path, arcname)
+                    files_added += 1
+                    logger.debug("Додано до архіву: %s", arcname)
+
+            if files_added == 0:
+                # Якщо жодного файлу не додано, видаляємо ZIP
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+                logger.warning(
+                    "Не знайдено файлів для архівування user_id %s", user_id
+                )
+                return None
+
+        logger.info(
+            "Створено архів для user_id %s: %s (%s файлів)",
+            user_id,
+            zip_filename,
+            files_added,
+        )
+        return zip_path
+
+    except Exception as e:
+        logger.error(
+            "Помилка створення архіву для user_id %s: %s", user_id, e, exc_info=True
+        )
+        return None
+
+
+# ==============================================================================
+# 🧹 ОЧИСТКА СТАРИХ АРХІВІВ
+# ==============================================================================
+
+
+async def orm_cleanup_old_archives(days: int = 30) -> int:
+    """
+    Видаляє архіви старше вказаної кількості днів.
+    Повертає кількість видалених записів.
+    """
+    try:
+        from datetime import timedelta
+
+        cutoff_date = datetime.now() - timedelta(days=days)
+
+        async with async_session() as session:
+            # Отримуємо старі списки
+            result = await session.execute(
+                select(SavedList).where(SavedList.created_at < cutoff_date)
+            )
+            old_lists = result.scalars().all()
+
+            deleted_count = 0
+
+            for saved_list in old_lists:
+                # Видаляємо файл
+                if saved_list.file_path and os.path.exists(saved_list.file_path):
+                    try:
+                        os.remove(saved_list.file_path)
+                    except Exception as file_error:
+                        logger.warning(
+                            "Не вдалося видалити файл %s: %s",
+                            saved_list.file_path,
+                            file_error,
+                        )
+
+                # Видаляємо запис
+                await session.execute(
+                    delete(SavedList).where(SavedList.id == saved_list.id)
+                )
+                deleted_count += 1
+
+            await session.commit()
+
+            logger.info("Очищено старих архівів: %s (старше %s днів)", deleted_count, days)
+            return deleted_count
+
+    except Exception as e:
+        logger.error("Помилка очищення старих архівів: %s", e, exc_info=True)
+        return 0
+
+
+# ==============================================================================
+# 📊 СТАТИСТИКА АРХІВІВ
+# ==============================================================================
+
+
+async def orm_get_archives_stats() -> dict:
+    """
+    Повертає статистику по архівах (для адміна).
+    """
+    try:
+        async with async_session() as session:
+            # Загальна кількість
+            from sqlalchemy import func
+
+            total_result = await session.execute(select(func.count(SavedList.id)))
+            total_archives = total_result.scalar_one()
+
+            # Унікальні користувачі
+            users_result = await session.execute(
+                select(func.count(func.distinct(SavedList.user_id)))
+            )
+            total_users = users_result.scalar_one()
+
+            # Розмір директорії
+            total_size = 0
+            if os.path.exists(ARCHIVES_PATH):
+                for filename in os.listdir(ARCHIVES_PATH):
+                    filepath = os.path.join(ARCHIVES_PATH, filename)
+                    if os.path.isfile(filepath):
+                        total_size += os.path.getsize(filepath)
+
+            return {
+                "total_archives": total_archives,
+                "total_users": total_users,
+                "total_size_mb": round(total_size / (1024 * 1024), 2),
+            }
+
+    except Exception as e:
+        logger.error("Помилка отримання статистики архівів: %s", e, exc_info=True)
+        return {
+            "total_archives": 0,
+            "total_users": 0,
+            "total_size_mb": 0,
+        }
