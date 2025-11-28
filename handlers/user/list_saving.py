@@ -8,7 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile, Message
 
 from config import ADMIN_IDS
-from database.engine import async_session
 from keyboards.reply import get_main_menu_kb
 from utils.list_processor import process_and_save_list
 
@@ -31,18 +30,16 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
     surplus_list_path = None
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                main_list_path, surplus_list_path = await process_and_save_list(
-                    session, user_id
-                )
+        # Обробляємо та зберігаємо список (створює власну сесію)
+        main_list_path, surplus_list_path = await process_and_save_list(user_id)
 
         await msg.delete()
 
         if not main_list_path and not surplus_list_path:
             await message.answer(
                 "❌ Список порожній або виникла помилка.\n\n"
-                "Переконайтесь, що ви додали товари до списку."
+                "Переконайтесь, що ви додали товари до списку.",
+                reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
             )
             return
 
@@ -51,23 +48,25 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
             await bot.send_document(
                 user_id,
                 FSInputFile(main_list_path),
-                caption="✅ **Ваше замовлення**\n\nТовари доступні для збору.",
+                caption="✅ Ваше замовлення\n\nТовари доступні для збору.",
             )
             os.remove(main_list_path)
+            logger.info("Відправлено основне замовлення для user_id %s", user_id)
 
         # Відправляємо дефіцит (якщо є)
         if surplus_list_path and os.path.exists(surplus_list_path):
             await bot.send_document(
                 user_id,
                 FSInputFile(surplus_list_path),
-                caption="⚠️ **Дефіцит**\n\nЦих товарів недостатньо або немає на складі.",
+                caption="⚠️ Дефіцит\n\nЦих товарів недостатньо або немає на складі.",
             )
             os.remove(surplus_list_path)
+            logger.info("Відправлено список дефіциту для user_id %s", user_id)
 
         is_admin = user_id in ADMIN_IDS
 
         success_message = (
-            "✅ **Список успішно збережено!**\n\n"
+            "✅ Список успішно збережено!\n\n"
             "📦 Файли надіслано вище\n"
             "🗑 Поточний список очищено\n\n"
             "Можете починати новий збір!"
@@ -79,16 +78,30 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.error("Помилка збереження списку для %s: %s", user_id, e, exc_info=True)
+        
+        try:
+            await msg.delete()
+        except:
+            pass
+        
         await message.answer(
-            "❌ **Помилка збереження списку**\n\n"
-            "Спробуйте ще раз або зверніться до адміністратора."
+            "❌ Помилка збереження списку\n\n"
+            "Спробуйте ще раз або зверніться до адміністратора.",
+            reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
         )
 
         # Видаляємо файли у разі помилки
         if main_list_path and os.path.exists(main_list_path):
-            os.remove(main_list_path)
+            try:
+                os.remove(main_list_path)
+            except:
+                pass
+        
         if surplus_list_path and os.path.exists(surplus_list_path):
-            os.remove(surplus_list_path)
+            try:
+                os.remove(surplus_list_path)
+            except:
+                pass
 
 
 # ==============================================================================

@@ -42,4 +42,7 @@ migrations/
 alembic.ini
 *.db
 backups/
-epicservice_db
+*_db
+*_db-shm
+*_db-wal
+    

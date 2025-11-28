@@ -3,193 +3,229 @@
 import logging
 import os
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import ARCHIVES_PATH
-from database.models import SavedList, SavedListItem, StockHistory
+from database.engine import async_session
+from database.models import Product, SavedList, SavedListItem, TempList
 from database.orm import orm_clear_temp_list, orm_get_temp_list
 
 logger = logging.getLogger(__name__)
 
 
-async def process_and_save_list(
-    session: AsyncSession, user_id: int
-) -> Tuple[Optional[str], Optional[str]]:
+# ==============================================================================
+# 📊 ФОРМАТУВАННЯ СПИСКУ ДЛЯ ВІДОБРАЖЕННЯ
+# ==============================================================================
+
+
+def format_list_for_display(temp_list: List[TempList]) -> str:
     """
-    Обробляє тимчасовий список користувача та генерує файли.
+    Форматує тимчасовий список для відображення користувачу.
     
-    Повертає кортеж: (шлях_основного_файлу, шлях_файлу_дефіциту)
-    Якщо дефіциту немає, другий елемент буде None.
+    Args:
+        temp_list: Список позицій TempList
+    
+    Returns:
+        Відформатований текст для відправки користувачу
+    """
+    if not temp_list:
+        return "📭 Ваш список порожній."
+
+    lines = ["📦 Ваш поточний список:\n"]
+
+    for idx, item in enumerate(temp_list, start=1):
+        product = item.product
+        article = product.артикул
+        name = product.назва
+        quantity = item.quantity
+
+        lines.append(f"{idx}. {article} - {name}")
+        lines.append(f"   Кількість: {quantity} шт.\n")
+
+    total_items = len(temp_list)
+    total_quantity = sum(item.quantity for item in temp_list)
+
+    lines.append(f"\n📊 Всього позицій: {total_items}")
+    lines.append(f"📊 Загальна кількість: {total_quantity} шт.")
+
+    return "\n".join(lines)
+
+
+# ==============================================================================
+# 💾 ЗБЕРЕЖЕННЯ СПИСКУ
+# ==============================================================================
+
+
+async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Обробляє тимчасовий список користувача та зберігає його.
+    
+    Розділяє товари на:
+    - Доступні (основне замовлення)
+    - Дефіцит (недостатньо на складі)
+    
+    Args:
+        user_id: ID користувача
+    
+    Returns:
+        Tuple[main_list_path, surplus_list_path] - шляхи до створених файлів
+        (None, None) якщо список порожній або помилка
     """
     try:
+        # Отримуємо тимчасовий список
         temp_list = await orm_get_temp_list(user_id)
-        
+
         if not temp_list:
             logger.warning("Спроба зберегти порожній список для user_id %s", user_id)
             return None, None
 
-        # Розподіляємо товари на доступні та дефіцит
+        # Розділяємо на доступні та дефіцит
         available_items = []
         deficit_items = []
 
         for item in temp_list:
             product = item.product
-            
-            # Парсимо кількість зі складу
+            requested_qty = item.quantity
+
+            # Парсимо кількість на складі
             try:
                 stock_qty = float(str(product.кількість).replace(",", "."))
-            except (ValueError, TypeError):
-                logger.error("Невірний формат кількості для товару ID %s", product.id)
-                stock_qty = 0
+            except (ValueError, AttributeError):
+                stock_qty = 0.0
 
-            permanently_reserved = product.відкладено or 0
-            available = int(stock_qty - permanently_reserved)
+            # Резерв (відкладено)
+            reserved_qty = product.відкладено or 0
 
-            if available >= item.quantity:
-                # Товар повністю доступний
+            # Доступна кількість = залишок - відкладено
+            available_qty = max(0, stock_qty - reserved_qty)
+
+            if available_qty >= requested_qty:
+                # Достатньо на складі
                 available_items.append({
-                    "Артикул": product.артикул,
-                    "Назва": product.назва,
-                    "Кількість": item.quantity,
-                    "Відділ": product.відділ,
-                    "Група": product.група,
+                    "артикул": product.артикул,
+                    "назва": product.назва,
+                    "група": product.група,
+                    "кількість": requested_qty,
+                    "залишок": stock_qty,
                 })
-                
-                # Оновлюємо залишки
-                new_stock = stock_qty - item.quantity
-                product.кількість = str(new_stock).replace(".", ",")
-                
-                # Записуємо в історію
-                history = StockHistory(
-                    product_id=product.id,
-                    articul=product.артикул,
-                    old_quantity=str(stock_qty).replace(".", ","),
-                    new_quantity=str(new_stock).replace(".", ","),
-                    change_source="user_list",
-                )
-                session.add(history)
-                
-            elif available > 0:
-                # Частковий дефіцит
-                available_items.append({
-                    "Артикул": product.артикул,
-                    "Назва": product.назва,
-                    "Кількість": available,
-                    "Відділ": product.відділ,
-                    "Група": product.група,
-                })
-                
-                deficit_items.append({
-                    "Артикул": product.артикул,
-                    "Назва": product.назва,
-                    "Не вистачає": item.quantity - available,
-                    "Відділ": product.відділ,
-                })
-                
-                # Оновлюємо залишки до 0
-                product.кількість = "0"
-                
-                history = StockHistory(
-                    product_id=product.id,
-                    articul=product.артикул,
-                    old_quantity=str(stock_qty).replace(".", ","),
-                    new_quantity="0",
-                    change_source="user_list",
-                )
-                session.add(history)
-                
             else:
-                # Повний дефіцит
+                # Недостатньо
+                if available_qty > 0:
+                    # Частково є
+                    available_items.append({
+                        "артикул": product.артикул,
+                        "назва": product.назва,
+                        "група": product.група,
+                        "кількість": available_qty,
+                        "залишок": stock_qty,
+                    })
+
+                # Дефіцит
+                deficit_qty = requested_qty - available_qty
                 deficit_items.append({
-                    "Артикул": product.артикул,
-                    "Назва": product.назва,
-                    "Не вистачає": item.quantity,
-                    "Відділ": product.відділ,
+                    "артикул": product.артикул,
+                    "назва": product.назва,
+                    "група": product.група,
+                    "потрібно": requested_qty,
+                    "є_в_наявності": available_qty,
+                    "дефіцит": deficit_qty,
                 })
 
-        # Генеруємо файли
+        # Створюємо файли
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(ARCHIVES_PATH, exist_ok=True)
 
-        main_file_path = None
-        deficit_file_path = None
+        main_list_path = None
+        surplus_list_path = None
 
         # Основне замовлення
         if available_items:
-            df_main = pd.DataFrame(available_items)
             main_filename = f"order_{user_id}_{timestamp}.xlsx"
-            main_file_path = os.path.join(ARCHIVES_PATH, main_filename)
-            df_main.to_excel(main_file_path, index=False, engine="openpyxl")
-            
-            # Зберігаємо в базу
-            saved_list = SavedList(
-                user_id=user_id,
-                file_name=main_filename,
-                file_path=main_file_path,
-            )
-            session.add(saved_list)
-            await session.flush()  # Отримуємо ID
-            
-            # Додаємо позиції
-            for item_data in available_items:
-                list_item = SavedListItem(
-                    list_id=saved_list.id,
-                    article_name=f"{item_data['Артикул']} - {item_data['Назва']}",
-                    quantity=item_data['Кількість'],
-                )
-                session.add(list_item)
+            main_list_path = os.path.join(ARCHIVES_PATH, main_filename)
+
+            df_main = pd.DataFrame(available_items)
+            df_main.to_excel(main_list_path, index=False, engine="openpyxl")
 
             logger.info("Створено основне замовлення для user_id %s: %s", user_id, main_filename)
 
-        # Файл дефіциту
+        # Дефіцит
         if deficit_items:
-            df_deficit = pd.DataFrame(deficit_items)
             deficit_filename = f"deficit_{user_id}_{timestamp}.xlsx"
-            deficit_file_path = os.path.join(ARCHIVES_PATH, deficit_filename)
-            df_deficit.to_excel(deficit_file_path, index=False, engine="openpyxl")
-            
-            logger.info("Створено файл дефіциту для user_id %s: %s", user_id, deficit_filename)
+            surplus_list_path = os.path.join(ARCHIVES_PATH, deficit_filename)
 
-        # Очищаємо тимчасовий список
+            df_deficit = pd.DataFrame(deficit_items)
+            df_deficit.to_excel(surplus_list_path, index=False, engine="openpyxl")
+
+            logger.info("Створено список дефіциту для user_id %s: %s", user_id, deficit_filename)
+
+        # Зберігаємо в БД
+        async with async_session() as session:
+            # Створюємо запис SavedList
+            saved_list = SavedList(
+                user_id=user_id,
+                file_name=main_filename if main_list_path else deficit_filename,
+                file_path=main_list_path if main_list_path else surplus_list_path,
+            )
+            session.add(saved_list)
+            await session.flush()  # Отримуємо ID
+
+            # Зберігаємо позиції
+            for item_data in available_items:
+                saved_item = SavedListItem(
+                    list_id=saved_list.id,
+                    article_name=f"{item_data['артикул']} - {item_data['назва']}",
+                    quantity=item_data['кількість'],
+                )
+                session.add(saved_item)
+
+            await session.commit()
+
+        # ВАЖЛИВО: Очищаємо тимчасовий список ПІСЛЯ збереження
         await orm_clear_temp_list(user_id)
-        
-        await session.commit()
-        
-        return main_file_path, deficit_file_path
+
+        return main_list_path, surplus_list_path
 
     except Exception as e:
-        await session.rollback()
         logger.error("Помилка обробки списку для user_id %s: %s", user_id, e, exc_info=True)
         return None, None
 
 
-def format_list_for_display(temp_list: list, max_length: int = 4000) -> str:
+# ==============================================================================
+# 📄 ГЕНЕРАЦІЯ КАРТКИ ТОВАРУ
+# ==============================================================================
+
+
+def generate_product_card(product: Product, available_qty: float) -> str:
     """
-    Форматує список товарів для відображення користувачу.
-    Обрізає, якщо текст занадто довгий.
-    """
-    if not temp_list:
-        return "📭 Ваш список порожній."
-
-    dept = temp_list[0].product.відділ
-    lines = [f"📋 **Ваш список (Відділ: {dept}):**\n"]
-
-    total_qty = 0
-    for item in temp_list:
-        total_qty += item.quantity
-        lines.append(
-            f"• `{item.product.артикул}` {item.product.назва} — **{item.quantity}**"
-        )
-
-    lines.append(f"\n🔹 Всього позицій: {len(temp_list)}")
-    lines.append(f"🔹 Сума одиниць: {total_qty}")
-
-    full_text = "\n".join(lines)
+    Генерує текстову картку товару для відображення.
     
-    if len(full_text) > max_length:
-        full_text = full_text[:max_length - 50] + "\n... (список занадто довгий)"
+    Args:
+        product: Об'єкт Product
+        available_qty: Доступна кількість
+    
+    Returns:
+        Відформатований текст картки
+    """
+    lines = [
+        f"🏷 Артикул: {product.артикул}",
+        f"📦 Назва: {product.назва}",
+        f"🏢 Відділ: {product.відділ}",
+        f"📂 Група: {product.група}",
+        f"",
+        f"📊 Залишок: {product.кількість} шт.",
+    ]
 
-    return full_text
+    if product.відкладено:
+        lines.append(f"🔒 Відкладено: {product.відкладено} шт.")
+
+    lines.append(f"✅ Доступно: {available_qty} шт.")
+
+    if product.ціна:
+        lines.append(f"💰 Ціна: {product.ціна:.2f} грн")
+
+    if product.місяці_без_руху and product.місяці_без_руху > 0:
+        lines.append(f"⏱ Без руху: {product.місяці_без_руху} міс.")
+
+    return "\n".join(lines)

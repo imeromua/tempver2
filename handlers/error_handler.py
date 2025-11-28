@@ -11,7 +11,7 @@ from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramUnauthorizedError,
 )
-from aiogram.types import ErrorEvent, Update
+from aiogram.types import ErrorEvent
 
 from config import ADMIN_IDS
 
@@ -25,12 +25,13 @@ router = Router()
 
 
 @router.errors()
-async def error_handler(event: ErrorEvent, update: Update) -> Any:
+async def error_handler(event: ErrorEvent) -> Any:
     """
     Глобальний обробник помилок бота.
     Логує всі помилки та надсилає користувачу зрозумілі повідомлення.
     """
     exception = event.exception
+    update = event.update
     user_id = None
 
     # Визначаємо user_id з різних типів update
@@ -79,6 +80,8 @@ async def error_handler(event: ErrorEvent, update: Update) -> Any:
             user_message = "⚠️ Повідомлення застаріло. Спробуйте ще раз."
         elif "query is too old" in str(exception).lower():
             user_message = "⚠️ Запит застарів. Спробуйте ще раз."
+        elif "can't parse entities" in str(exception).lower():
+            user_message = "❌ Помилка форматування тексту. Спробуйте інший спосіб."
         else:
             user_message = "❌ Помилка запиту. Спробуйте інший спосіб."
 

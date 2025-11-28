@@ -7,6 +7,7 @@ from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from database.engine import async_session
 from database.models import Product, TempList
 
 logger = logging.getLogger(__name__)
@@ -23,10 +24,7 @@ async def orm_get_temp_list(user_id: int) -> List[TempList]:
     Повертає список відсортований за ID.
     """
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
+        async with async_session() as session:
             result = await session.execute(
                 select(TempList)
                 .options(joinedload(TempList.product))
@@ -50,10 +48,7 @@ async def orm_get_temp_list_department(user_id: int) -> Optional[int]:
     Якщо список порожній, повертає None.
     """
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
+        async with async_session() as session:
             result = await session.execute(
                 select(Product.відділ)
                 .join(TempList, TempList.product_id == Product.id)
@@ -77,10 +72,7 @@ async def orm_get_temp_list_item(
     Повертає None, якщо товар не знайдено.
     """
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
+        async with async_session() as session:
             result = await session.execute(
                 select(TempList).where(
                     and_(
@@ -113,11 +105,7 @@ async def orm_add_item_to_temp_list(
     Повертає True при успіху.
     """
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
-
+        async with async_session() as session:
             # Перевіряємо, чи вже є товар в списку
             existing = await session.execute(
                 select(TempList).where(
@@ -176,10 +164,16 @@ async def orm_update_item_quantity(
     """
     Оновлює кількість товару в тимчасовому списку.
     Якщо нова кількість <= 0, видаляє товар зі списку.
+    
+    Примітка: Ця функція приймає session як параметр і НЕ створює власну.
     """
     try:
         if new_quantity <= 0:
-            return await orm_delete_item_from_temp_list(item_id)
+            # Видаляємо через ту ж сесію
+            await session.execute(delete(TempList).where(TempList.id == item_id))
+            await session.commit()
+            logger.info("Видалено позицію ID %s (кількість <= 0)", item_id)
+            return True
 
         result = await session.execute(select(TempList).where(TempList.id == item_id))
         item = result.scalar_one_or_none()
@@ -211,14 +205,9 @@ async def orm_update_item_quantity(
 async def orm_delete_item_from_temp_list(item_id: int) -> bool:
     """Видаляє товар з тимчасового списку за ID позиції."""
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
-
+        async with async_session() as session:
             await session.execute(delete(TempList).where(TempList.id == item_id))
             await session.commit()
-
             logger.info("Видалено позицію ID %s з тимчасового списку", item_id)
             return True
 
@@ -232,11 +221,7 @@ async def orm_delete_item_from_temp_list(item_id: int) -> bool:
 async def orm_clear_temp_list(user_id: int) -> bool:
     """Очищає весь тимчасовий список користувача."""
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
-
+        async with async_session() as session:
             result = await session.execute(
                 delete(TempList).where(TempList.user_id == user_id)
             )
@@ -268,11 +253,7 @@ async def orm_get_total_temp_reservation_for_product(product_id: int) -> int:
     Використовується для розрахунку доступних залишків.
     """
     try:
-        async with AsyncSession(bind=None) as session:
-            from database.engine import async_engine
-
-            session = AsyncSession(bind=async_engine)
-
+        async with async_session() as session:
             result = await session.execute(
                 select(func.sum(TempList.quantity)).where(
                     TempList.product_id == product_id

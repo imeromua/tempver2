@@ -10,7 +10,7 @@ import pandas as pd
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from config import ADMIN_IDS, ARCHIVES_PATH, BACKUP_DIR, DB_NAME, DB_TYPE
 from database.engine import async_session
@@ -20,6 +20,11 @@ from sqlalchemy import select
 from utils.import_processor import (
     generate_import_preview,
     process_import_dataframe,
+)
+from utils.markdown_corrector import (
+    clean_text_for_markdown,
+    escape_markdown,
+    format_filename_safe,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,22 +74,24 @@ async def proceed_with_import(message: Message, state: FSMContext, bot: Bot):
         return
 
     await state.set_state(ImportStates.waiting_for_file)
-    await message.answer(
-        "📥 **Розумний імпорт залишків**\n\n"
+    
+    help_text = (
+        "📥 Розумний імпорт залишків\n\n"
         "Надішліть Excel файл (.xlsx, .xls, .ods)\n\n"
-        "**Що вміє бот:**\n"
-        "✅ Автовизначення колонок\n"
-        "✅ Розділення артикул + назва\n"
-        "✅ Валідація даних\n"
-        "✅ Бекап перед імпортом\n"
-        "✅ Превʼю перед підтвердженням\n\n"
-        "**Підтримувані формати:**\n"
+        "Що вміє бот:\n"
+        "• Автовизначення колонок\n"
+        "• Розділення артикул + назва\n"
+        "• Валідація даних\n"
+        "• Бекап перед імпортом\n"
+        "• Превʼю перед підтвердженням\n\n"
+        "Підтримувані формати:\n"
         "• Короткі назви: в, г, а, н, м, к, с\n"
-        "• Повні назви: Відділ, Група, Артикул...\n"
-        "• Комбіновані: articul_name (артикул + назва)\n\n"
-        "Для скасування: /reset",
-        reply_markup=get_admin_menu_kb(),
+        "• Повні назви: Відділ, Група, Артикул\n"
+        "• Комбіновані: артикул + назва в одній колонці\n\n"
+        "Для скасування: /reset"
     )
+    
+    await message.answer(help_text, reply_markup=get_admin_menu_kb())
 
 
 # ==============================================================================
@@ -126,7 +133,7 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
         
         # Підтримка різних форматів
         if document.file_name.endswith(".ods"):
-            df = await loop.run_in_executor(None, pd.read_excel, file_path, "engine", "odf")
+            df = await loop.run_in_executor(None, pd.read_excel, file_path, None, "odf")
         else:
             df = await loop.run_in_executor(None, pd.read_excel, file_path)
 
@@ -141,13 +148,13 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
         )
         await state.set_state(ImportStates.confirming_preview)
 
-        # Форматуємо превʼю для відображення
+        # Форматуємо превʼю для відображення (БЕЗ MARKDOWN)
         preview_text = (
-            f"👁 **ПРЕВʼЮ ІМПОРТУ**\n\n"
-            f"📄 Файл: `{document.file_name}`\n"
-            f"📊 Рядків: **{preview.stats['total_rows']}**\n"
-            f"📋 Колонок: **{preview.stats['columns_count']}**\n\n"
-            f"**🔍 Розпізнані колонки:**\n"
+            "👁 ПРЕВʼЮ ІМПОРТУ\n\n"
+            f"📄 Файл: {format_filename_safe(document.file_name)}\n"
+            f"📊 Рядків: {preview.stats['total_rows']}\n"
+            f"📋 Колонок: {preview.stats['columns_count']}\n\n"
+            "🔍 Розпізнані колонки:\n"
         )
 
         for standard, detected in preview.columns_detected.items():
@@ -166,21 +173,32 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
                 "months_no_movement": "Без руху",
             }.get(standard, standard)
             
-            preview_text += f"{emoji} {standard_ua}: `{detected or 'не знайдено'}`\n"
+            detected_safe = escape_markdown(detected) if detected else 'не знайдено'
+            preview_text += f"{emoji} {standard_ua}: {detected_safe}\n"
 
         # Показуємо приклад даних
-        preview_text += "\n**📋 Перші 3 рядки:**\n\n"
+        preview_text += "\n📋 Перші 3 рядки:\n\n"
         sample_str = preview.sample_rows.head(3).to_string(index=False, max_colwidth=30)
-        preview_text += sample_str[:500]  # Обрізаємо якщо дуже довго
-        preview_text += "\n\n⚠️ **Підтвердіть імпорт:**"
+        sample_str = clean_text_for_markdown(sample_str)
+        preview_text += sample_str[:500]
+        preview_text += "\n\n⚠️ Підтвердіть імпорт:"
 
-        await msg.edit_text(preview_text, reply_markup=get_confirmation_kb())
+        await msg.delete()
+        # Відправляємо БЕЗ parse_mode для безпеки
+        await message.answer(preview_text, reply_markup=get_confirmation_kb(), parse_mode=None)
 
     except Exception as e:
         logger.error("Помилка аналізу файлу: %s", e, exc_info=True)
-        await msg.edit_text(f"❌ Помилка читання файлу:\n{str(e)}")
         
-        if os.path.exists(file_path):
+        try:
+            await msg.delete()
+        except:
+            pass
+        
+        error_msg = f"❌ Помилка читання файлу:\n{str(e)[:200]}"
+        await message.answer(error_msg, reply_markup=get_admin_menu_kb())
+        
+        if 'file_path' in locals() and os.path.exists(file_path):
             os.remove(file_path)
         
         await state.clear()
@@ -212,17 +230,17 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
     backup_success = await create_backup_before_import()
 
     if not backup_success:
-        await msg.edit_text(
-            "⚠️ Не вдалося створити бекап!\n"
-            "Продовжити імпорт без бекапу?",
+        await msg.delete()
+        await message.answer(
+            "⚠️ Не вдалося створити бекап!\nПродовжити імпорт без бекапу?",
             reply_markup=get_confirmation_kb(),
         )
-        # TODO: додати окремий стан для підтвердження без бекапу
         return
 
-    await msg.edit_text("📊 Імпорт даних...\n⏳ 0%")
-
     try:
+        await msg.delete()
+        progress_msg = await message.answer("📊 Імпорт даних...\n⏳ 0%", parse_mode=None)
+
         # Читаємо файл
         loop = asyncio.get_running_loop()
         df = await loop.run_in_executor(None, pd.read_excel, file_path)
@@ -234,18 +252,18 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
 
         if not validation.is_valid:
             error_text = (
-                f"❌ **Валідація не пройдена!**\n\n"
-                f"**Помилок:** {len(validation.errors)}\n\n"
+                f"❌ Валідація не пройдена!\n\n"
+                f"Помилок: {len(validation.errors)}\n\n"
             )
             
-            # Показуємо перші 10 помилок
             for error in validation.errors[:10]:
                 error_text += f"• {error}\n"
             
             if len(validation.errors) > 10:
                 error_text += f"\n... та ще {len(validation.errors) - 10} помилок"
 
-            await msg.edit_text(error_text)
+            await progress_msg.delete()
+            await message.answer(error_text, reply_markup=get_admin_menu_kb(), parse_mode=None)
             
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -253,13 +271,14 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
             await state.clear()
             return
 
-        # Імпорт у БД з прогресбаром
+        # Імпорт у БД
         added_count = 0
         updated_count = 0
         skipped_count = 0
         price_warnings = []
 
         total = len(processed_df)
+        last_progress = 0
 
         async with async_session() as session:
             for idx, row in processed_df.iterrows():
@@ -267,9 +286,16 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
                     article = row["артикул"]
                     
                     # Оновлюємо прогрес кожні 10%
-                    if idx % max(1, total // 10) == 0:
-                        progress = int((idx / total) * 100)
-                        await msg.edit_text(f"📊 Імпорт даних...\n⏳ {progress}%")
+                    current_progress = int((idx / total) * 100)
+                    if current_progress >= last_progress + 10:
+                        last_progress = current_progress
+                        try:
+                            await progress_msg.edit_text(
+                                f"📊 Імпорт даних...\n⏳ {current_progress}%",
+                                parse_mode=None
+                            )
+                        except Exception:
+                            pass  # Ігноруємо помилки редагування
 
                     # Шукаємо існуючий товар
                     result = await session.execute(
@@ -338,26 +364,28 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
             os.remove(file_path)
 
         # Результат
+        filename_safe = format_filename_safe(filename)
         result_text = (
-            f"✅ **ІМПОРТ ЗАВЕРШЕНО!**\n\n"
-            f"📄 Файл: `{filename}`\n"
-            f"📊 Всього рядків: **{total_rows}**\n\n"
-            f"➕ Додано нових: **{added_count}**\n"
-            f"🔄 Оновлено: **{updated_count}**\n"
-            f"⏭ Пропущено: **{skipped_count}**\n\n"
+            "✅ ІМПОРТ ЗАВЕРШЕНО!\n\n"
+            f"📄 Файл: {filename_safe}\n"
+            f"📊 Всього рядків: {total_rows}\n\n"
+            f"➕ Додано нових: {added_count}\n"
+            f"🔄 Оновлено: {updated_count}\n"
+            f"⏭ Пропущено: {skipped_count}\n"
         )
 
         if validation.warnings:
-            result_text += f"⚠️ Попереджень: **{len(validation.warnings)}**\n"
+            result_text += f"\n⚠️ Попереджень: {len(validation.warnings)}"
 
         if price_warnings:
-            result_text += f"\n💰 **Значні зміни цін ({len(price_warnings)}):**\n"
+            result_text += f"\n\n💰 Значні зміни цін ({len(price_warnings)}):\n"
             for warning in price_warnings[:5]:
                 result_text += f"{warning}\n"
             if len(price_warnings) > 5:
-                result_text += f"... та ще {len(price_warnings) - 5}\n"
+                result_text += f"... та ще {len(price_warnings) - 5}"
 
-        await msg.edit_text(result_text, reply_markup=get_admin_menu_kb())
+        await progress_msg.delete()
+        await message.answer(result_text, reply_markup=get_admin_menu_kb(), parse_mode=None)
         await state.clear()
 
         logger.info(
@@ -369,9 +397,16 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.error("Критична помилка імпорту: %s", e, exc_info=True)
-        await msg.edit_text(f"❌ Помилка імпорту:\n{str(e)}")
         
-        if os.path.exists(file_path):
+        try:
+            await progress_msg.delete()
+        except:
+            pass
+        
+        error_msg = f"❌ Помилка імпорту:\n{str(e)[:200]}"
+        await message.answer(error_msg, reply_markup=get_admin_menu_kb())
+        
+        if 'file_path' in locals() and os.path.exists(file_path):
             os.remove(file_path)
         
         await state.clear()
@@ -431,20 +466,18 @@ async def download_import_template(message: Message):
         df.to_excel(template_path, index=False, engine="openpyxl")
 
         # Відправляємо
-        from aiogram.types import FSInputFile
-        
         await message.answer_document(
             FSInputFile(template_path),
             caption=(
-                "📋 **Шаблон для імпорту**\n\n"
-                "**Колонки:**\n"
-                "• **в** - відділ (номер)\n"
-                "• **г** - група (текст)\n"
-                "• **а** - артикул (8 цифр)\n"
-                "• **н** - назва товару\n"
-                "• **м** - місяців без руху\n"
-                "• **к** - кількість (залишок)\n"
-                "• **с** - сума (вартість залишку)\n\n"
+                "📋 Шаблон для імпорту\n\n"
+                "Колонки:\n"
+                "• в - відділ (номер)\n"
+                "• г - група (текст)\n"
+                "• а - артикул (8 цифр)\n"
+                "• н - назва товару\n"
+                "• м - місяців без руху\n"
+                "• к - кількість (залишок)\n"
+                "• с - сума (вартість залишку)\n\n"
                 "Можна використовувати повні назви колонок українською."
             ),
         )
@@ -455,3 +488,4 @@ async def download_import_template(message: Message):
     except Exception as e:
         logger.error("Помилка створення шаблону: %s", e, exc_info=True)
         await message.answer(f"❌ Помилка створення шаблону:\n{str(e)}")
+# ==============================================================================
