@@ -1,46 +1,46 @@
 # epicservice/keyboards/inline.py
 
-"""
-ЗАСТАРІЛИЙ МОДУЛЬ!
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-Цей файл більше не використовується в проекті.
-Всі inline клавіатури були замінені на Reply клавіатури (keyboards/reply.py).
+def get_product_inline_kb(product_id: int, current_qty: int = 1) -> InlineKeyboardMarkup:
+    """
+    Layout:
+    [➖] [0 шт] [➕] (якщо 0)
+    [➖] [✅ N шт] [➕] (якщо > 0)
+    """
+    builder = InlineKeyboardBuilder()
 
-Міграція завершена:
-- ✅ Головне меню -> Reply
-- ✅ Адмін-панель -> Reply
-- ✅ Додавання товарів -> Reply
-- ✅ Редагування списку -> Reply
-- ✅ Підтвердження дій -> Reply
+    # Візуалізація центральної кнопки
+    if current_qty > 0:
+        center_text = f"✅ {current_qty} шт"
+    else:
+        center_text = f"{current_qty} шт"
 
-Якщо цей файл імпортується в коді - видаліть ці імпорти.
-
-Дата застаріння: 28.11.2025
-"""
-
-# Для зворотної сумісності залишаємо порожні заглушки
-# Видаліть цей файл повністю після перевірки, що ніде не імпортується
-
-
-def get_confirmation_kb(*args, **kwargs):
-    """ЗАСТАРІЛО: Використовуйте keyboards.reply.get_confirmation_kb()"""
-    raise NotImplementedError(
-        "Inline клавіатури більше не підтримуються. "
-        "Використовуйте keyboards.reply.get_confirmation_kb()"
+    builder.row(
+        InlineKeyboardButton(
+            text="➖", 
+            callback_data=f"cart:dec:{product_id}:{current_qty}"
+        ),
+        InlineKeyboardButton(
+            text=center_text, 
+            callback_data=f"cart:add:{product_id}:{current_qty}"
+        ),
+        InlineKeyboardButton(
+            text="➕", 
+            callback_data=f"cart:inc:{product_id}:{current_qty}"
+        ),
     )
 
-
-def get_quantity_selector_kb(*args, **kwargs):
-    """ЗАСТАРІЛО: Використовуйте keyboards.reply.get_quantity_selection_kb()"""
-    raise NotImplementedError(
-        "Inline клавіатури більше не підтримуються. "
-        "Використовуйте keyboards.reply.get_quantity_selection_kb()"
+    builder.row(
+        InlineKeyboardButton(
+            text="📥 Додати все", 
+            callback_data=f"cart:all:{product_id}"
+        ),
+        InlineKeyboardButton(
+            text="📝 Інша кількість", 
+            callback_data=f"cart:manual:{product_id}"
+        ),
     )
 
-
-def get_list_editing_kb(*args, **kwargs):
-    """ЗАСТАРІЛО: Використовуйте keyboards.reply.get_list_editing_kb()"""
-    raise NotImplementedError(
-        "Inline клавіатури більше не підтримуються. "
-        "Використовуйте keyboards.reply.get_list_editing_kb()"
-    )
+    return builder.as_markup()

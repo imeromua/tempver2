@@ -17,69 +17,82 @@ def format_product_card(
     product: Product,
     available_qty: int,
     temp_reserved: int = 0,
+    in_cart_qty: int = 0,
+    selected_quantity: Optional[int] = None,
 ) -> str:
     """
-    Форматує картку товару з детальною інформацією.
-
-    Args:
-        product: Об'єкт товару з БД
-        available_qty: Доступна кількість для замовлення
-        temp_reserved: Кількість в тимчасових резервах
-
-    Returns:
-        Відформатований текст картки
+    Форматує картку товару.
     """
     try:
-        # Парсимо кількість зі складу
-        stock_qty_str = str(product.кількість).replace(",", ".")
         try:
-            stock_qty = float(stock_qty_str)
+            stock_qty = float(str(product.кількість).replace(",", "."))
         except ValueError:
             stock_qty = 0
 
-        # Інформація про резерви
+        price = product.ціна or 0.0
+        
+        # Базові резерви
         permanently_reserved = product.відкладено or 0
+        total_db_reserved = permanently_reserved + temp_reserved
+        
+        # --- ДИНАМІЧНИЙ РОЗРАХУНОК ---
+        if selected_quantity is not None:
+            if selected_quantity == 0:
+                # СПЕЦІАЛЬНИЙ ВИПАДОК ДЛЯ 0:
+                # Показуємо ціну за 1 шт як довідкову
+                current_sum = price
+                sum_label = "Сума (1 шт)"
+                
+                # Резерви і доступність НЕ змінюємо (бо 0 обрано)
+                display_available = available_qty
+                display_reserved = total_db_reserved
+            else:
+                # Стандартний розрахунок для > 0
+                current_sum = price * selected_quantity
+                sum_label = f"Сума ({selected_quantity} шт)"
+                
+                display_available = max(0, available_qty - selected_quantity)
+                display_reserved = total_db_reserved + selected_quantity
+        else:
+            # Режим перегляду (без селектора)
+            current_sum = price * available_qty
+            sum_label = f"Сума ({available_qty} шт)"
+            display_available = available_qty
+            display_reserved = total_db_reserved
+        
+        months = product.місяці_без_руху or 0
 
-        # Базова інформація
+        # --- ФОРМУВАННЯ ТЕКСТУ ---
         lines = [
-            f"📦 **{product.назва}**\n",
-            f"**Артикул:** `{product.артикул}`",
-            f"**Відділ:** {product.відділ}",
-            f"**Група:** {product.група}",
-            "",
-            f"**На складі:** {product.кількість}",
+            f"📦 **{product.назва}**",
+            f"🔢 Артикул: `{product.артикул}`",
+            f"🏢 Відділ: {product.відділ} | 📂 Група: {product.група}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "📊 **ЗАЛИШКИ:**",
+            f"📦 Залишок: {stock_qty:g} шт",
         ]
 
-        # Резерви
-        if permanently_reserved > 0:
-            lines.append(f"**Відкладено:** {permanently_reserved}")
+        lines.append(f"🔒 Резерв: {display_reserved} шт | ✅ Доступно: {display_available} шт")
 
-        if temp_reserved > 0:
-            lines.append(f"**В резерві (інші користувачі):** {temp_reserved}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("💰 **ВАРТІСТЬ:**")
+        
+        lines.append(
+            f"💵 Ціна: {price:,.2f} грн/шт | 💸 {sum_label}: {current_sum:,.2f} грн".replace(",", " ")
+        )
+        
+        if months > 0:
+            lines.append(f"⏱ Без руху: {months} міс")
 
-        # Доступна кількість
-        if available_qty > 0:
-            lines.append(f"\n✅ **Доступно для замовлення:** {available_qty} шт.")
-        else:
-            lines.append(f"\n❌ **Товар відсутній**")
-
-        # Додаткова інформація (якщо є)
-        if product.ціна and product.ціна > 0:
-            lines.append(f"**Ціна:** {product.ціна:.2f} грн")
-
-        if product.сума_залишку and product.сума_залишку > 0:
-            lines.append(f"**Сума залишку:** {product.сума_залишку:.2f} грн")
-
-        if product.місяці_без_руху and product.місяці_без_руху > 0:
-            lines.append(f"⚠️ Без руху: {product.місяці_без_руху} міс.")
-
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        
         return "\n".join(lines)
 
     except Exception as e:
         logger.error(
             "Помилка форматування картки товару ID %s: %s", product.id, e, exc_info=True
         )
-        return f"📦 **{product.назва}**\nАртикул: `{product.артикул}`\n\n❌ Помилка відображення деталей"
+        return f"📦 **{product.назва}**\n❌ Помилка відображення деталей"
 
 
 async def send_or_edit_product_card(
@@ -88,25 +101,16 @@ async def send_or_edit_product_card(
     user_id: int,
     product: Product,
     message_id: Optional[int] = None,
+    in_cart_qty: int = 0,
+    selected_qty: Optional[int] = None,
 ) -> Optional[Message]:
     """
-    Надсилає або редагує картку товару.
-
-    Args:
-        bot: Екземпляр бота
-        chat_id: ID чату
-        user_id: ID користувача
-        product: Об'єкт товару
-        message_id: ID повідомлення для редагування (якщо потрібно)
-
-    Returns:
-        Надіслане або відредаговане повідомлення
+    Універсальна функція для відправки або редагування картки товару.
     """
     try:
         # Отримуємо інформацію про резерви
         temp_reserved = await orm_get_total_temp_reservation_for_product(product.id)
 
-        # Рахуємо доступну кількість
         try:
             stock_qty = float(str(product.кількість).replace(",", "."))
         except ValueError:
@@ -115,10 +119,10 @@ async def send_or_edit_product_card(
         permanently_reserved = product.відкладено or 0
         available = max(0, int(stock_qty - permanently_reserved - temp_reserved))
 
-        # Форматуємо картку
-        card_text = format_product_card(product, available, temp_reserved)
+        card_text = format_product_card(
+            product, available, temp_reserved, in_cart_qty, selected_qty
+        )
 
-        # Надсилаємо або редагуємо
         if message_id:
             try:
                 await bot.edit_message_text(
@@ -129,7 +133,6 @@ async def send_or_edit_product_card(
                 return None
             except TelegramBadRequest as e:
                 if "message is not modified" in str(e).lower():
-                    logger.debug("Повідомлення не змінилось, пропускаємо редагування")
                     return None
                 raise
         else:
@@ -137,69 +140,9 @@ async def send_or_edit_product_card(
 
     except Exception as e:
         logger.error(
-            "Помилка відправки/редагування картки товару ID %s: %s",
+            "Помилка відправки картки ID %s: %s",
             product.id,
             e,
             exc_info=True,
         )
         return None
-
-
-def format_product_short(product: Product) -> str:
-    """
-    Короткий формат товару (для списків).
-
-    Returns:
-        Компактний рядок з основною інформацією
-    """
-    return f"`{product.артикул}` {product.назва} | {product.кількість} шт."
-
-
-def format_search_result(product: Product, index: int, similarity: int = 0) -> str:
-    """
-    Форматує товар для відображення в результатах пошуку.
-
-    Args:
-        product: Товар
-        index: Порядковий номер
-        similarity: Відсоток схожості (0-100)
-
-    Returns:
-        Відформатований рядок
-    """
-    result = f"{index}. `{product.артикул}` **{product.назва}**\n"
-    result += f"   Відділ: {product.відділ} | Залишок: {product.кількість}"
-
-    if similarity > 0:
-        result += f"\n   Схожість: {similarity}%"
-
-    return result + "\n"
-
-
-def validate_product_availability(
-    product: Product, requested_qty: int
-) -> tuple[bool, str]:
-    """
-    Перевіряє чи доступна потрібна кількість товару.
-
-    Returns:
-        (доступність: bool, повідомлення: str)
-    """
-    if not product.активний:
-        return False, "❌ Товар деактивований."
-
-    try:
-        stock_qty = float(str(product.кількість).replace(",", "."))
-    except ValueError:
-        return False, "❌ Помилка формату кількості товару."
-
-    if stock_qty <= 0:
-        return False, "❌ Товар відсутній на складі."
-
-    permanently_reserved = product.відкладено or 0
-    available = int(stock_qty - permanently_reserved)
-
-    if requested_qty > available:
-        return False, f"❌ Недостатньо товару. Доступно: {available} шт."
-
-    return True, "✅ Товар доступний"

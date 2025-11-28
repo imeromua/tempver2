@@ -1,331 +1,276 @@
 # epicservice/handlers/user/item_addition.py
 
 import logging
+from contextlib import suppress
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select, func, and_
 
+from config import ADMIN_IDS
 from database.engine import async_session
+from database.models import TempList
 from database.orm import (
     orm_add_item_to_temp_list,
     orm_get_product_by_id,
     orm_get_temp_list_department,
-    orm_get_total_temp_reservation_for_product,
 )
-from keyboards.reply import (
-    BTN_QTY_ADD_ALL,
-    BTN_QTY_CANCEL,
-    BTN_QTY_CONFIRM,
-    BTN_QTY_MANUAL,
-    BTN_QTY_MINUS_1,
-    BTN_QTY_MINUS_5,
-    BTN_QTY_MINUS_10,
-    BTN_QTY_PLUS_1,
-    BTN_QTY_PLUS_5,
-    BTN_QTY_PLUS_10,
-    get_main_menu_kb,
-    get_quantity_selection_kb,
-)
-from lexicon.lexicon import LEXICON
+from keyboards.inline import get_product_inline_kb
+from keyboards.reply import get_main_menu_kb
+from utils.card_generator import format_product_card
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-
 class ItemAdditionStates(StatesGroup):
-    selecting_quantity = State()
     waiting_for_manual_quantity = State()
 
-
 # ==============================================================================
-# 🔧 БІЗНЕС-ЛОГІКА (СЕРВІСНИЙ СЛОЙ)
-# ==============================================================================
-
-
-async def _add_item_to_cart_service(
-    user_id: int, product_id: int, quantity: int
-) -> tuple[bool, str]:
-    """
-    Службова функція: перевіряє умови та додає товар у БД.
-    Повертає кортеж: (успіх: bool, повідомлення: str).
-    """
-    try:
-        async with async_session() as session:
-            product = await orm_get_product_by_id(session, product_id)
-            if not product:
-                return False, LEXICON.PRODUCT_NOT_FOUND
-
-            allowed_department = await orm_get_temp_list_department(user_id)
-            if allowed_department is not None and product.відділ != allowed_department:
-                return False, LEXICON.DEPARTMENT_MISMATCH.format(
-                    department=allowed_department
-                )
-
-            # Перевірка кількості
-            try:
-                stock_quantity = float(str(product.кількість).replace(",", "."))
-            except (ValueError, AttributeError):
-                return False, "❌ Помилка формату кількості товару в БД."
-
-            total_temp_reserved = await orm_get_total_temp_reservation_for_product(
-                product.id
-            )
-            permanently_reserved = product.відкладено or 0
-            available = int(stock_quantity - permanently_reserved - total_temp_reserved)
-
-            if quantity > available:
-                return (
-                    False,
-                    f"❌ Недостатньо товару. Доступно: {available} шт.",
-                )
-
-            await orm_add_item_to_temp_list(user_id, product_id, quantity)
-            logger.info(
-                "Користувач %s додав товар ID %s (кількість: %s) до списку.",
-                user_id,
-                product_id,
-                quantity,
-            )
-
-            return True, f"✅ Додано {quantity} шт. до списку"
-
-    except Exception as e:
-        logger.error(
-            "Помилка сервісу додавання товару для %s: %s", user_id, e, exc_info=True
-        )
-        return False, LEXICON.UNEXPECTED_ERROR
-
-
-async def _get_available_quantity(product_id: int) -> int:
-    """Повертає доступну кількість товару."""
-    try:
-        async with async_session() as session:
-            product = await orm_get_product_by_id(session, product_id)
-            if not product:
-                return 0
-
-            stock_quantity = float(str(product.кількість).replace(",", "."))
-            total_temp_reserved = await orm_get_total_temp_reservation_for_product(
-                product.id
-            )
-            permanently_reserved = product.відкладено or 0
-            available = int(stock_quantity - permanently_reserved - total_temp_reserved)
-            return max(0, available)
-    except Exception as e:
-        logger.error("Помилка отримання доступної кількості: %s", e, exc_info=True)
-        return 0
-
-
-# ==============================================================================
-# 📋 ОБРОБНИКИ (ENTRY POINT - викликається з user_search.py)
+# 🛠 ДОПОМІЖНІ ФУНКЦІЇ
 # ==============================================================================
 
-
-async def start_quantity_selection(
-    message: Message, state: FSMContext, product_id: int
-):
+async def _get_product_data(user_id: int, product_id: int):
     """
-    Запускає процес вибору кількості товару.
-    Викликається з user_search.py після вибору товару.
+    Збирає всі дані про товар в ОДНІЙ сесії.
     """
-    await state.set_state(ItemAdditionStates.selecting_quantity)
-    await state.update_data(product_id=product_id, current_quantity=1)
-
     async with async_session() as session:
         product = await orm_get_product_by_id(session, product_id)
         if not product:
-            await message.answer("❌ Товар не знайдено.")
-            await state.clear()
-            return
+            return None
 
-        available = await _get_available_quantity(product_id)
+        # Резерви (глобальні)
+        res_reserved = await session.execute(
+            select(func.sum(TempList.quantity)).where(TempList.product_id == product_id)
+        )
+        total_reserved = res_reserved.scalar_one_or_none()
+        temp_reserved = int(total_reserved) if total_reserved else 0
 
-        await message.answer(
-            f"📦 **{product.назва}**\n"
-            f"Артикул: `{product.артикул}`\n"
-            f"Доступно: **{available}** шт.\n\n"
-            f"Оберіть кількість:",
-            reply_markup=get_quantity_selection_kb(current_qty=1),
+        # У кошику користувача
+        res_cart = await session.execute(
+            select(TempList).where(
+                and_(TempList.user_id == user_id, TempList.product_id == product_id)
+            )
+        )
+        cart_item = res_cart.scalar_one_or_none()
+        in_cart = cart_item.quantity if cart_item else 0
+
+        # Доступність
+        try:
+            stock_qty = float(str(product.кількість).replace(",", "."))
+        except ValueError:
+            stock_qty = 0
+            
+        permanently_reserved = product.відкладено or 0
+        available = max(0, int(stock_qty - permanently_reserved - temp_reserved))
+
+        return product, available, temp_reserved, in_cart
+
+async def update_card_display(
+    bot: Bot, 
+    chat_id: int, 
+    message_id: int, 
+    user_id: int, 
+    product_id: int, 
+    current_ui_qty: int
+):
+    """Оновлює картку та клавіатуру."""
+    data = await _get_product_data(user_id, product_id)
+    if not data:
+        return
+
+    product, available, temp_reserved, in_cart = data
+    
+    new_text = format_product_card(
+        product, available, temp_reserved, in_cart, selected_quantity=current_ui_qty
+    )
+    new_kb = get_product_inline_kb(product_id, current_ui_qty)
+
+    with suppress(TelegramBadRequest):
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=new_text,
+            reply_markup=new_kb
         )
 
-
 # ==============================================================================
-# ➕➖ ЗМІНА КІЛЬКОСТІ
-# ==============================================================================
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_PLUS_1)
-async def qty_plus_1(message: Message, state: FSMContext):
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    current = data.get("current_quantity", 1)
-    available = await _get_available_quantity(product_id)
-
-    new_qty = min(current + 1, available)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_PLUS_5)
-async def qty_plus_5(message: Message, state: FSMContext):
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    current = data.get("current_quantity", 1)
-    available = await _get_available_quantity(product_id)
-
-    new_qty = min(current + 5, available)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_PLUS_10)
-async def qty_plus_10(message: Message, state: FSMContext):
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    current = data.get("current_quantity", 1)
-    available = await _get_available_quantity(product_id)
-
-    new_qty = min(current + 10, available)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_MINUS_1)
-async def qty_minus_1(message: Message, state: FSMContext):
-    data = await state.get_data()
-    current = data.get("current_quantity", 1)
-
-    new_qty = max(current - 1, 1)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_MINUS_5)
-async def qty_minus_5(message: Message, state: FSMContext):
-    data = await state.get_data()
-    current = data.get("current_quantity", 1)
-
-    new_qty = max(current - 5, 1)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_MINUS_10)
-async def qty_minus_10(message: Message, state: FSMContext):
-    data = await state.get_data()
-    current = data.get("current_quantity", 1)
-
-    new_qty = max(current - 10, 1)
-    await state.update_data(current_quantity=new_qty)
-    await message.answer(
-        f"📦 Кількість: **{new_qty}**", reply_markup=get_quantity_selection_kb(new_qty)
-    )
-
-
-# ==============================================================================
-# ✅ ПІДТВЕРДЖЕННЯ ТА СКАСУВАННЯ
+# 🚀 ENTRY POINT
 # ==============================================================================
 
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_ADD_ALL)
-async def add_all_available(message: Message, state: FSMContext):
-    """Додає всю доступну кількість."""
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    available = await _get_available_quantity(product_id)
-
+async def start_quantity_selection(message: Message, state: FSMContext, product_id: int):
+    """Початок вибору."""
     user_id = message.from_user.id
-    success, result_text = await _add_item_to_cart_service(
-        user_id, product_id, available
+    
+    data = await _get_product_data(user_id, product_id)
+    if not data:
+        await message.answer("❌ Товар не знайдено.")
+        return
+
+    product, available, temp_reserved, in_cart = data
+    
+    # СТАРТ З 0 (як просили)
+    start_qty = 0
+    
+    text = format_product_card(
+        product, available, temp_reserved, in_cart, selected_quantity=start_qty
     )
+    kb = get_product_inline_kb(product_id, current_qty=start_qty)
 
-    await state.clear()
-    is_admin = user_id in [1962821395]  # TODO: замінити на ADMIN_IDS
-    await message.answer(result_text, reply_markup=get_main_menu_kb(is_admin))
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_CONFIRM)
-async def confirm_quantity(message: Message, state: FSMContext):
-    """Підтверджує вибрану кількість."""
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    quantity = data.get("current_quantity", 1)
-
-    user_id = message.from_user.id
-    success, result_text = await _add_item_to_cart_service(
-        user_id, product_id, quantity
-    )
-
-    await state.clear()
-    is_admin = user_id in [1962821395]  # TODO: замінити на ADMIN_IDS
-    await message.answer(result_text, reply_markup=get_main_menu_kb(is_admin))
-
-
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_CANCEL)
-async def cancel_quantity_selection(message: Message, state: FSMContext):
-    """Скасовує вибір кількості."""
-    await state.clear()
-    user_id = message.from_user.id
-    is_admin = user_id in [1962821395]  # TODO: замінити на ADMIN_IDS
-    await message.answer("❌ Скасовано.", reply_markup=get_main_menu_kb(is_admin))
-
+    await message.answer(text, reply_markup=kb)
 
 # ==============================================================================
-# ✏️ РУЧНЕ ВВЕДЕННЯ КІЛЬКОСТІ
+# ⚡ ОБРОБКА КНОПОК
 # ==============================================================================
 
+@router.callback_query(F.data.startswith("cart:inc:"))
+async def on_increment(callback: CallbackQuery):
+    _, _, product_id, current_qty = callback.data.split(":")
+    product_id = int(product_id)
+    current_qty = int(current_qty)
+    
+    data = await _get_product_data(callback.from_user.id, product_id)
+    if not data: return
+    _, available, _, _ = data
 
-@router.message(ItemAdditionStates.selecting_quantity, F.text == BTN_QTY_MANUAL)
-async def manual_input_trigger(message: Message, state: FSMContext):
-    """Запитує ручне введення кількості."""
+    if current_qty >= available:
+        await callback.answer(f"⚠️ Доступно лише {available} шт.", show_alert=True)
+        return
+
+    new_qty = current_qty + 1
+    await update_card_display(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        callback.from_user.id, product_id, new_qty
+    )
+    await callback.answer() 
+
+@router.callback_query(F.data.startswith("cart:dec:"))
+async def on_decrement(callback: CallbackQuery):
+    _, _, product_id, current_qty = callback.data.split(":")
+    product_id = int(product_id)
+    current_qty = int(current_qty)
+
+    # Дозволяємо зменшувати до 0
+    if current_qty <= 0:
+        await callback.answer("⚠️ Мінімум 0 шт.")
+        return
+
+    new_qty = current_qty - 1
+    await update_card_display(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        callback.from_user.id, product_id, new_qty
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("cart:add:"))
+async def on_add(callback: CallbackQuery):
+    """Додає товар (клік по центральній кнопці)."""
+    _, _, product_id, qty = callback.data.split(":")
+    product_id = int(product_id)
+    qty = int(qty)
+    user_id = callback.from_user.id
+
+    # ЗАБОРОНА додавати 0
+    if qty <= 0:
+        await callback.answer("⚠️ Оберіть кількість більше 0!", show_alert=True)
+        return
+
+    # Перевірка відділу
+    async with async_session() as session:
+        product = await orm_get_product_by_id(session, product_id)
+        allowed_dept = await orm_get_temp_list_department(user_id)
+        
+        if allowed_dept is not None and product.відділ != allowed_dept:
+            await callback.answer(
+                f"🚫 Інший відділ! Потрібен {allowed_dept}.", show_alert=True
+            )
+            return
+
+    success = await orm_add_item_to_temp_list(user_id, product_id, qty)
+    
+    if success:
+        await callback.answer(f"✅ Додано {qty} шт.", show_alert=False)
+        # Скидаємо селектор на 0 після успішного додавання
+        await update_card_display(
+            callback.bot, callback.message.chat.id, callback.message.message_id,
+            user_id, product_id, 0
+        )
+    else:
+        await callback.answer("❌ Помилка додавання", show_alert=True)
+
+@router.callback_query(F.data.startswith("cart:all:"))
+async def on_add_all(callback: CallbackQuery):
+    _, _, product_id = callback.data.split(":")
+    product_id = int(product_id)
+    user_id = callback.from_user.id
+
+    data = await _get_product_data(user_id, product_id)
+    if not data: return
+    product, available, _, _ = data
+
+    if available <= 0:
+        await callback.answer("❌ Немає в наявності", show_alert=True)
+        return
+
+    allowed_dept = await orm_get_temp_list_department(user_id)
+    if allowed_dept is not None and product.відділ != allowed_dept:
+        await callback.answer(f"🚫 Інший відділ", show_alert=True)
+        return
+
+    await orm_add_item_to_temp_list(user_id, product_id, available)
+    await callback.answer(f"✅ Додано все ({available} шт)", show_alert=False)
+    
+    # Скидаємо на 0
+    await update_card_display(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        user_id, product_id, 0
+    )
+
+# ==============================================================================
+# 📝 РУЧНЕ ВВЕДЕННЯ
+# ==============================================================================
+
+@router.callback_query(F.data.startswith("cart:manual:"))
+async def on_manual_input(callback: CallbackQuery, state: FSMContext):
+    _, _, product_id = callback.data.split(":")
     await state.set_state(ItemAdditionStates.waiting_for_manual_quantity)
-    await message.answer(
-        "✏️ Введіть потрібну кількість числом:",
-        reply_markup=get_quantity_selection_kb(1),
-    )
-
-
-@router.message(ItemAdditionStates.waiting_for_manual_quantity, F.text.isdigit())
-async def process_manual_quantity(message: Message, state: FSMContext):
-    """Обробляє вручну введену кількість."""
-    data = await state.get_data()
-    product_id = data.get("product_id")
-    user_id = message.from_user.id
-
-    try:
-        quantity = int(message.text)
-        if quantity <= 0:
-            await message.answer("❌ Кількість повинна бути більше 0.")
-            return
-
-        success, result_text = await _add_item_to_cart_service(
-            user_id, product_id, quantity
-        )
-
-        await state.clear()
-        is_admin = user_id in [1962821395]  # TODO: замінити на ADMIN_IDS
-        await message.answer(result_text, reply_markup=get_main_menu_kb(is_admin))
-
-    except ValueError:
-        await message.answer("❌ Невірний формат. Введіть число.")
-
+    await state.update_data(product_id=int(product_id))
+    await callback.message.answer("✏️ Введіть кількість (числом):")
+    await callback.answer()
 
 @router.message(ItemAdditionStates.waiting_for_manual_quantity)
-async def invalid_manual_input(message: Message):
-    """Обробляє невірний формат введення."""
-    await message.answer("❌ Будь ласка, введіть число.")
+async def process_manual_qty(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введіть число.")
+        return
 
+    qty = int(message.text)
+    if qty <= 0:
+        await message.answer("❌ Число > 0.")
+        return
 
-# ==============================================================================
+    data = await state.get_data()
+    product_id = data.get("product_id")
+    user_id = message.from_user.id
+
+    data_prod = await _get_product_data(user_id, product_id)
+    if not data_prod: return
+    product, available, _, _ = data_prod
+    
+    allowed_dept = await orm_get_temp_list_department(user_id)
+    if allowed_dept is not None and product.відділ != allowed_dept:
+        await message.answer(f"🚫 Невірний відділ.")
+        await state.clear()
+        return
+
+    if qty > available:
+        await message.answer(f"⚠️ Недостатньо. Є лише {available} шт.")
+        return
+
+    await orm_add_item_to_temp_list(user_id, product_id, qty)
+    
+    is_admin = user_id in ADMIN_IDS
+    await message.answer(f"✅ Додано {qty} шт.", reply_markup=get_main_menu_kb(is_admin))
+    await state.clear()

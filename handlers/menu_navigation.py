@@ -197,7 +197,8 @@ async def delete_current_list(message: Message):
     )
 
 
-@router.message(F.text == "💾 Зберегти список")
+# ВИПРАВЛЕНО: Використовуємо BTN_SAVE_LIST замість жорсткого тексту
+@router.message(F.text == BTN_SAVE_LIST)
 async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bot):
     """Тригер для збереження поточного списку."""
     user_id = message.from_user.id
@@ -419,7 +420,7 @@ async def admin_users_placeholder(message: Message):
 
 @router.message(F.text == BTN_ALL_ARCHIVES)
 async def admin_all_archives_placeholder(message: Message):
-    await message.answer("🗄 Розділ 'Архіви всіх' в розробці.")
+    await message.answer("🗂 Розділ 'Архіви всіх' в розробці.")
 
 
 # ==============================================================================
@@ -462,6 +463,3 @@ async def confirm_clean_db(message: Message, state: FSMContext):
 async def cancel_clean_db(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Очистка скасована.", reply_markup=get_utilities_menu_kb())
-
-
-# ==============================================================================

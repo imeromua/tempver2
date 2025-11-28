@@ -15,14 +15,16 @@ from .analytics import (
 
 # --- Архіви ---
 from .archives import (
-    orm_cleanup_old_archives,
-    orm_delete_saved_list,
+    orm_delete_archive_by_id,     # ✅ Додано (було пропущено)
     orm_delete_user_archives,
     orm_get_all_archives,
-    orm_get_archives_stats,
-    orm_get_saved_list_items,
+    orm_get_archive_by_id,        # ✅ Додано (було пропущено)
     orm_get_user_lists_archive,
     orm_pack_user_files_to_zip,
+    # orm_cleanup_old_archives,   # ❌ Видалено (не існує в archives.py)
+    # orm_delete_saved_list,      # ❌ Видалено (невірне ім'я, замінено на orm_delete_archive_by_id)
+    # orm_get_archives_stats,     # ❌ Видалено (не існує в archives.py)
+    # orm_get_saved_list_items,   # ❌ Видалено (не існує в archives.py)
 )
 
 # --- Товари ---
@@ -87,12 +89,10 @@ __all__ = [
     # Архіви
     "orm_get_user_lists_archive",
     "orm_get_all_archives",
-    "orm_get_saved_list_items",
+    "orm_get_archive_by_id",      # ✅
     "orm_delete_user_archives",
-    "orm_delete_saved_list",
+    "orm_delete_archive_by_id",   # ✅
     "orm_pack_user_files_to_zip",
-    "orm_cleanup_old_archives",
-    "orm_get_archives_stats",
     # Аналітика
     "orm_get_all_collected_items_sync",
     "orm_get_top_products",

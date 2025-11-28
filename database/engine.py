@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 if DB_TYPE == "sqlite":
-    # SQLite (локальна БД)
+    # SQLite (локальна БД - залишаємо для сумісності)
     async_engine = create_async_engine(
         f"sqlite+aiosqlite:///{DB_NAME}",
         echo=False,
@@ -53,24 +53,16 @@ if DB_TYPE == "sqlite":
         Налаштовує SQLite для кращої роботи з паралельними запитами.
         """
         cursor = dbapi_conn.cursor()
-        # WAL mode - дозволяє одночасне читання та запис
         cursor.execute("PRAGMA journal_mode=WAL")
-        # Timeout для блокувань (30 секунд)
         cursor.execute("PRAGMA busy_timeout=30000")
-        # Кешування в пам'яті
-        cursor.execute("PRAGMA cache_size=-64000")  # 64MB
-        # Синхронізація (NORMAL = баланс швидкості та безпеки)
         cursor.execute("PRAGMA synchronous=NORMAL")
-        # Temp store в пам'яті
-        cursor.execute("PRAGMA temp_store=MEMORY")
-        # Foreign keys
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
     logger.info("SQLite налаштовано з WAL режимом та оптимізаціями")
 
 elif DB_TYPE == "postgres":
-    # PostgreSQL (продакшн)
+    # PostgreSQL (ОНОВЛЕНА КОНФІГУРАЦІЯ)
     try:
         from config import DB_HOST, DB_PASS, DB_PORT, DB_USER
     except ImportError:
@@ -78,6 +70,7 @@ elif DB_TYPE == "postgres":
             "Для PostgreSQL потрібні параметри: DB_HOST, DB_PORT, DB_USER, DB_PASS в config.py"
         )
 
+    # Формуємо URL підключення
     DATABASE_URL = (
         f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
@@ -85,25 +78,29 @@ elif DB_TYPE == "postgres":
         f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
 
+    # Асинхронний рушій (Основний)
     async_engine = create_async_engine(
         DATABASE_URL,
         echo=False,
-        pool_pre_ping=True,
-        pool_size=20,
-        max_overflow=40,
-        pool_recycle=3600,
+        pool_pre_ping=True,  # Перевіряє з'єднання перед видачею
+        pool_size=20,        # Розмір пулу з'єднань
+        max_overflow=40,     # Максимальна кількість додаткових з'єднань
+        pool_recycle=3600,   # Перезапускати з'єднання щогодини
+        # ВАЖЛИВО: Встановлюємо рівень ізоляції для коректної роботи транзакцій
+        isolation_level="READ COMMITTED",
     )
 
+    # Синхронний рушій (Для звітів та міграцій)
     sync_engine = create_engine(
         SYNC_DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
-        pool_size=20,
-        max_overflow=40,
+        pool_size=10,
+        max_overflow=20,
         pool_recycle=3600,
     )
 
-    logger.info("PostgreSQL engine створено")
+    logger.info("✅ PostgreSQL engine успішно ініціалізовано (Local Mode)")
 
 else:
     raise ValueError(f"Невідомий тип БД: {DB_TYPE}. Підтримуються: sqlite, postgres")
@@ -145,10 +142,9 @@ async def test_connection():
     """Тестує підключення до БД."""
     try:
         async with async_session() as session:
-            if DB_TYPE == "sqlite":
-                await session.execute("SELECT 1")
-            else:
-                await session.execute("SELECT 1")
+            # PostgreSQL вимагає коректного синтаксису навіть для тестів
+            from sqlalchemy import text
+            await session.execute(text("SELECT 1"))
         return True
     except Exception as e:
         logger.error("Помилка підключення до БД: %s", e, exc_info=True)
@@ -159,7 +155,8 @@ def test_connection_sync():
     """Тестує синхронне підключення до БД."""
     try:
         with sync_session() as session:
-            session.execute("SELECT 1")
+            from sqlalchemy import text
+            session.execute(text("SELECT 1"))
         return True
     except Exception as e:
         logger.error("Помилка синхронного підключення до БД: %s", e, exc_info=True)
