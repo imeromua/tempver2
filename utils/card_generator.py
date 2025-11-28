@@ -8,21 +8,25 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
 from database.models import Product
-from database.orm import (orm_get_temp_list_item_quantity,
-                          orm_get_total_temp_reservation_for_product)
+from database.orm import (
+    orm_get_temp_list_item_quantity,
+    orm_get_total_temp_reservation_for_product,
+)
 from keyboards.inline import get_product_actions_kb
 from lexicon.lexicon import LEXICON
 from utils.markdown_corrector import escape_markdown
 
 logger = logging.getLogger(__name__)
 
+
 def format_quantity(quantity_str: str) -> Union[int, float]:
     """Конвертує рядок кількості в int або float."""
     try:
-        val = float(str(quantity_str).replace(',', '.'))
+        val = float(str(quantity_str).replace(",", "."))
         return int(val) if val.is_integer() else val
     except (ValueError, TypeError):
         return 0
+
 
 def get_category_emoji(department: int, group: str, name: str) -> str:
     """Підбирає емодзі залежно від категорії товару."""
@@ -31,43 +35,58 @@ def get_category_emoji(department: int, group: str, name: str) -> str:
 
     # 610 - Фреш / Продукти
     if dept == 610:
-        if any(x in name_lower for x in ['ковбас', 'м\'яс', 'сосис']): return '🥩'
-        if 'сир' in name_lower: return '🧀'
-        if any(x in name_lower for x in ['вино', 'горілка', 'коньяк', 'пиво']): return '🍷'
-        if 'хліб' in name_lower or 'багет' in name_lower: return '🍞'
-        if 'риба' in name_lower: return '🐟'
-        if 'овоч' in name_lower or 'фрукт' in name_lower: return '🍎'
-        return '🍽'
-    
+        if any(x in name_lower for x in ["ковбас", "м'яс", "сосис"]):
+            return "🥩"
+        if "сир" in name_lower:
+            return "🧀"
+        if any(x in name_lower for x in ["вино", "горілка", "коньяк", "пиво"]):
+            return "🍷"
+        if "хліб" in name_lower or "багет" in name_lower:
+            return "🍞"
+        if "риба" in name_lower:
+            return "🐟"
+        if "овоч" in name_lower or "фрукт" in name_lower:
+            return "🍎"
+        return "🍽"
+
     # 70 - Електроніка / Побутова техніка
     elif dept == 70:
-        if 'пилосос' in name_lower: return '🧹'
-        if any(x in name_lower for x in ['бойлер', 'водонагрівач']): return '🔥'
-        if 'телевізор' in name_lower: return '📺'
-        if any(x in name_lower for x in ['чайник', 'кавоварка']): return '☕'
-        if 'холодильник' in name_lower: return '❄️'
-        return '⚡'
+        if "пилосос" in name_lower:
+            return "🧹"
+        if any(x in name_lower for x in ["бойлер", "водонагрівач"]):
+            return "🔥"
+        if "телевізор" in name_lower:
+            return "📺"
+        if any(x in name_lower for x in ["чайник", "кавоварка"]):
+            return "☕"
+        if "холодильник" in name_lower:
+            return "❄️"
+        return "⚡"
 
     # 20 - Автотовари
     elif dept == 20:
-        if 'олива' in name_lower or 'масло' in name_lower: return '🛢'
-        return '🚗'
+        if "олива" in name_lower or "масло" in name_lower:
+            return "🛢"
+        return "🚗"
 
     # 50 - Господарство / Сантехніка
     elif dept == 50:
-        if 'змішувач' in name_lower: return '🚰'
-        return '🏠'
-    
+        if "змішувач" in name_lower:
+            return "🚰"
+        return "🏠"
+
     # 100 - Декор
     elif dept == 100:
-        return '🎨'
+        return "🎨"
 
-    return '📦'
+    return "📦"
+
 
 def format_months_no_sale(months: int) -> str:
     """Форматує рядок 'Без руху'."""
-    if months is None: months = 0
-    
+    if months is None:
+        months = 0
+
     if months == 0:
         return "🟢 Без руху: немає даних"
     elif months <= 3:
@@ -77,13 +96,14 @@ def format_months_no_sale(months: int) -> str:
     else:
         return f"🔴 Без руху: {months} міс ⚠️"
 
+
 async def send_or_edit_product_card(
     bot: Bot,
     chat_id: int,
     user_id: int,
     product: Product,
     message_id: int = None,
-    search_query: str | None = None
+    search_query: str | None = None,
 ) -> Message | None:
     """
     Формує та надсилає красиву картку товару.
@@ -96,27 +116,27 @@ async def send_or_edit_product_card(
         # Обробка чисел
         stock_qty = format_quantity(product.кількість)
         perm_reserved = product.відкладено or 0
-        
+
         # Доступно = Загалом - (Постійний резерв + Тимчасові резерви інших)
         # Але ми показуємо юзеру: Залишок заг., Резерв (всіх), Доступно
-        
+
         # Логіка відображення доступності
         available_qty = max(0, stock_qty - perm_reserved - total_reserved)
-        
+
         # Визначення одиниці виміру (евристика: якщо float - то кг/м, інакше шт)
         is_float = isinstance(stock_qty, float)
         unit = "кг" if is_float else "шт"
-        
+
         # Ціни та суми
         price = product.ціна or 0.0
         stock_sum_val = stock_qty * price
-        
+
         stock_sum_str = f"{stock_sum_val:,.2f}".replace(",", " ")
         price_str = f"{price:,.2f}".replace(",", " ")
 
         # Емодзі категорії
         emoji = get_category_emoji(product.відділ, product.група, product.назва)
-        
+
         # Рядок "Без руху"
         months_str = format_months_no_sale(product.місяці_без_руху)
 
@@ -125,10 +145,10 @@ async def send_or_edit_product_card(
         # або
         # Залишок: 5 шт
         # 🔒 Резерв: 2 шт | ✅ Доступно: 3 шт
-        
+
         stock_line = f"📦 Залишок: *{stock_qty}* {unit}"
         if is_float:
-             stock_line = f"⚖️ Залишок: *{stock_qty}* {unit}"
+            stock_line = f"⚖️ Залишок: *{stock_qty}* {unit}"
 
         if stock_qty == 0:
             reserve_line = f"❌ Доступно: 0 {unit}"
@@ -149,12 +169,14 @@ async def send_or_edit_product_card(
             unit=unit,
             stock_sum=stock_sum_str,
             months_line=months_str,
-            user_qty=format_quantity(in_user_list_qty)
+            user_qty=format_quantity(in_user_list_qty),
         )
-        
+
         # Кнопки
         # Для кнопки "Додати все" передаємо int, якщо це можливо, або float
-        qty_for_button = int(available_qty) if available_qty == int(available_qty) else available_qty
+        qty_for_button = (
+            int(available_qty) if available_qty == int(available_qty) else available_qty
+        )
         keyboard = get_product_actions_kb(product.id, qty_for_button, search_query)
 
         if message_id:
@@ -163,7 +185,7 @@ async def send_or_edit_product_card(
                     text=card_text,
                     chat_id=chat_id,
                     message_id=message_id,
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
                 )
             except TelegramBadRequest as e:
                 if "message is not modified" not in str(e):

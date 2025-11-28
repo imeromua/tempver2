@@ -4,10 +4,11 @@ import logging
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, TelegramObject
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
+
 
 class ThrottlingMiddleware(BaseMiddleware):
     """
@@ -28,17 +29,19 @@ class ThrottlingMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        
+
         # Працюємо тільки з повідомленнями та колбеками
         user = data.get("event_from_user")
-        
+
         if user:
             # Якщо користувач є в кеші — блокуємо дію
             if user.id in self.cache:
                 # Для CallbackQuery можна відповісти спливаючим вікном, щоб не було відчуття, що бот завис
                 if isinstance(event, CallbackQuery):
                     try:
-                        await event.answer("⏳ Не так швидко! Зачекайте трішки.", show_alert=False)
+                        await event.answer(
+                            "⏳ Не так швидко! Зачекайте трішки.", show_alert=False
+                        )
                     except Exception:
                         pass
                 # Перериваємо обробку (handler не викликається)

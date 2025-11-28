@@ -1,20 +1,21 @@
 # epicservice/database/orm/temp_lists.py
 
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
-from sqlalchemy import delete, func, select, distinct, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database.engine import async_session, sync_session
-from database.models import Product, TempList, SavedList
+from database.models import TempList
 
 # Налаштовуємо логер для цього модуля
 logger = logging.getLogger(__name__)
 
 
 # --- Асинхронні функції для роботи з тимчасовими списками ---
+
 
 async def orm_clear_temp_list(user_id: int, session: Optional[AsyncSession] = None):
     """
@@ -56,7 +57,10 @@ async def orm_add_item_to_temp_list(user_id: int, product_id: int, quantity: int
 
 # --- Нові функції для редагування ---
 
-async def orm_update_temp_list_item_quantity(user_id: int, product_id: int, new_quantity: int):
+
+async def orm_update_temp_list_item_quantity(
+    user_id: int, product_id: int, new_quantity: int
+):
     """
     Оновлює кількість конкретного товару в тимчасовому списку.
     """
@@ -83,6 +87,7 @@ async def orm_delete_temp_list_item(user_id: int, product_id: int):
 
 
 # --- Решта функцій ---
+
 
 async def orm_get_temp_list(user_id: int) -> list[TempList]:
     """
@@ -118,9 +123,8 @@ async def orm_get_temp_list_item_quantity(user_id: int, product_id: int) -> int:
     Отримує кількість конкретного товару в тимчасовому списку поточного користувача.
     """
     async with async_session() as session:
-        query = (
-            select(func.sum(TempList.quantity))
-            .where(TempList.user_id == user_id, TempList.product_id == product_id)
+        query = select(func.sum(TempList.quantity)).where(
+            TempList.user_id == user_id, TempList.product_id == product_id
         )
         quantity = await session.scalar(query)
         return quantity or 0
@@ -131,9 +135,8 @@ async def orm_get_total_temp_reservation_for_product(product_id: int) -> int:
     Отримує сумарну кількість товару у всіх тимчасових списках ВСІХ користувачів.
     """
     async with async_session() as session:
-        query = (
-            select(func.sum(TempList.quantity))
-            .where(TempList.product_id == product_id)
+        query = select(func.sum(TempList.quantity)).where(
+            TempList.product_id == product_id
         )
         total_quantity = await session.scalar(query)
         return total_quantity or 0

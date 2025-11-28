@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 # Завантажуємо змінні оточення з файлу .env
 if not load_dotenv():
-    logger.warning("Файл .env не знайдено або не вдалося завантажити. Використовуються системні змінні оточення.")
+    logger.warning(
+        "Файл .env не знайдено або не вдалося завантажити. Використовуються системні змінні оточення."
+    )
+
 
 def get_required_env(var_name: str) -> str:
     """
@@ -20,13 +23,17 @@ def get_required_env(var_name: str) -> str:
     """
     value = os.getenv(var_name)
     if not value:
-        error_msg = f"Критична помилка: відсутня обов'язкова змінна оточення: {var_name}"
+        error_msg = (
+            f"Критична помилка: відсутня обов'язкова змінна оточення: {var_name}"
+        )
         logger.critical(error_msg)
         raise ValueError(error_msg)
     return value
 
+
 # --- Конфігурація Бота ---
 BOT_TOKEN = get_required_env("BOT_TOKEN")
+
 
 def get_admin_ids() -> List[int]:
     """
@@ -37,13 +44,19 @@ def get_admin_ids() -> List[int]:
         logger.warning("Змінна ADMIN_IDS не задана. Адмін-панель буде недоступна.")
         return []
     try:
-        return [int(admin_id.strip()) for admin_id in admin_ids_str.split(',') if admin_id.strip()]
+        return [
+            int(admin_id.strip())
+            for admin_id in admin_ids_str.split(",")
+            if admin_id.strip()
+        ]
     except ValueError as e:
         logger.warning(
             "Некоректний формат ADMIN_IDS. Перевірте ваш .env файл. "
-            "Очікується числовий формат 'ID1,ID2,ID3'. Помилка: %s", e
+            "Очікується числовий формат 'ID1,ID2,ID3'. Помилка: %s",
+            e,
         )
         return []
+
 
 ADMIN_IDS = get_admin_ids()
 
@@ -52,11 +65,14 @@ ADMIN_IDS = get_admin_ids()
 DB_TYPE = os.getenv("DB_TYPE", "postgres")
 
 if DB_TYPE == "postgres":
+
     def validate_db_port(port_str: str) -> int:
         try:
             port_int = int(port_str)
             if not 1 <= port_int <= 65535:
-                raise ValueError("Порт бази даних повинен бути в діапазоні від 1 до 65535.")
+                raise ValueError(
+                    "Порт бази даних повинен бути в діапазоні від 1 до 65535."
+                )
             return port_int
         except ValueError as e:
             logger.critical("Невірний формат порту БД: %s", e)
@@ -69,26 +85,32 @@ if DB_TYPE == "postgres":
     DB_NAME = get_required_env("DB_NAME")
 
     # Асинхронний драйвер (asyncpg)
-    DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    DATABASE_URL = (
+        f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    )
     # Синхронний драйвер (psycopg2)
-    SYNC_DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    SYNC_DATABASE_URL = (
+        f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    )
 
 elif DB_TYPE == "sqlite":
     DB_NAME = os.getenv("DB_NAME", "bot_database.db")
-    
+
     # Асинхронний драйвер (aiosqlite)
     # 3 слеші = відносний шлях (у папці проєкту), 4 слеші = абсолютний шлях
     DATABASE_URL = f"sqlite+aiosqlite:///{DB_NAME}"
     # Синхронний драйвер (стандартний sqlite3)
     SYNC_DATABASE_URL = f"sqlite:///{DB_NAME}"
-    
+
     logger.info(f"Використовується локальна база даних SQLite: {DB_NAME}")
 
 else:
-    logger.critical(f"Невідомий тип бази даних DB_TYPE='{DB_TYPE}'. Використовуйте 'postgres' або 'sqlite'.")
+    logger.critical(
+        f"Невідомий тип бази даних DB_TYPE='{DB_TYPE}'. Використовуйте 'postgres' або 'sqlite'."
+    )
     raise ValueError("DB_TYPE must be 'postgres' or 'sqlite'")
 
 
 # --- Конфігурація Сховища ---
 ARCHIVES_PATH = "archives"
-BACKUP_DIR = "backups" # <--- ДОДАНО ЦЮ ЗМІННУ
+BACKUP_DIR = "backups"  # <--- ДОДАНО ЦЮ ЗМІННУ

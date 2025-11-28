@@ -2,17 +2,20 @@
 
 import logging
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router  # <--- Додав F сюди
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-# --- ЗМІНА: Додаємо імпорт ReplyKeyboardRemove ---
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import (  # <--- Додав CallbackQuery
+    CallbackQuery,
+    Message,
+)
 
 from config import ADMIN_IDS
 from database.orm import orm_upsert_user
-from keyboards.inline import get_admin_main_kb, get_user_main_kb
-from lexicon.lexicon import LEXICON
+
+# Використовуємо НОВУ клавіатуру
+from keyboards.reply import get_main_menu_kb
 
 logger = logging.getLogger(__name__)
 
@@ -21,56 +24,61 @@ router = Router()
 
 async def clean_previous_keyboard(state: FSMContext, bot: Bot, chat_id: int):
     """
-    Допоміжна функція для видалення клавіатури з попереднього головного повідомлення.
+    Допоміжна функція для видалення клавіатури з попереднього повідомлення.
+    Вона потрібна для сумісності зі старими хендлерами, які використовують Inline-кнопки.
     """
     data = await state.get_data()
     previous_message_id = data.get("main_message_id")
     if previous_message_id:
         try:
             await bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=previous_message_id,
-                reply_markup=None
+                chat_id=chat_id, message_id=previous_message_id, reply_markup=None
             )
         except TelegramBadRequest as e:
-            logger.info("Не вдалося видалити клавіатуру з попереднього повідомлення: %s", e)
+            # Це нормально, якщо повідомлення вже видалено або не може бути змінено
+            logger.debug("Не вдалося видалити клавіатуру: %s", e)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
     Обробник команди /start.
-    Тепер він видаляє клавіатуру з попереднього меню та зберігає ID нового.
+    Ініціалізує користувача і видає головне Reply-меню.
     """
     user = message.from_user
     try:
-        await clean_previous_keyboard(state, bot, message.chat.id)
-
+        # Реєструємо або оновлюємо юзера в БД
         await orm_upsert_user(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name
+            user_id=user.id, username=user.username, first_name=user.first_name
         )
         logger.info("Обробка команди /start для користувача %s.", user.id)
-        
-        if user.id in ADMIN_IDS:
-            text = LEXICON.CMD_START_ADMIN
-            kb = get_admin_main_kb()
-        else:
-            text = LEXICON.CMD_START_USER
-            kb = get_user_main_kb()
 
-        # --- ЗМІНА: Додаємо reply_markup=ReplyKeyboardRemove() ---
-        # Цей рядок гарантовано видалить будь-яку клавіатуру в полі вводу
-        sent_message = await message.answer(
-            text, 
-            reply_markup=kb, 
-            # Додаємо цей параметр для видалення старої клавіатури
-            reply_markup_remove=ReplyKeyboardRemove()
+        # Перевіряємо права адміна
+        is_admin = user.id in ADMIN_IDS
+
+        # Очищуємо будь-який попередній стан діалогу
+        await state.clear()
+
+        # Надсилаємо привітання та нову клавіатуру
+        await message.answer(
+            "👋 **Вітаю в Епік-сервіс!**\n\n"
+            "Я допоможу вам працювати зі складом.\n"
+            "Оберіть дію в меню знизу 👇",
+            reply_markup=get_main_menu_kb(is_admin=is_admin),
         )
-        
-        await state.update_data(main_message_id=sent_message.message_id)
-            
+
     except Exception as e:
-        logger.error("Неочікувана помилка в cmd_start для %s: %s", user.id, e, exc_info=True)
-        await message.answer(LEXICON.UNEXPECTED_ERROR)
+        logger.error(
+            "Неочікувана помилка в cmd_start для %s: %s", user.id, e, exc_info=True
+        )
+        await message.answer("😔 Сталася помилка при запуску.")
+
+
+@router.callback_query(F.data == "card:close")
+async def close_card_handler(callback: CallbackQuery):
+    """Обробник закриття (видалення) картки товару."""
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()

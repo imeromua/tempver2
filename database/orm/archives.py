@@ -6,11 +6,11 @@ import shutil
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import selectinload
 
 from config import ARCHIVES_PATH
 from database.engine import async_session, sync_session
-from database.models import (Product, SavedList, SavedListItem)
+from database.models import Product, SavedList, SavedListItem
+
 # Імпортуємо допоміжну функцію з нового модуля
 from database.orm.products import _extract_article
 
@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 
 # --- Асинхронні функції для роботи з архівами ---
 
+
 # ВИПРАВЛЕНО: Змінено порядок аргументів для відповідності конвенції
-async def orm_add_saved_list(session, user_id: int, file_name: str, file_path: str, items: list[dict]):
+async def orm_add_saved_list(
+    session, user_id: int, file_name: str, file_path: str, items: list[dict]
+):
     """
     Додає інформацію про новий збережений список до бази даних.
 
@@ -104,12 +107,15 @@ async def orm_get_users_with_archives() -> list[tuple[int, int]]:
 
 # --- Синхронні функції для звітів та фонових завдань ---
 
+
 def orm_get_all_collected_items_sync() -> list[dict]:
     """
     Синхронно збирає зведені дані про всі товари у всіх збережених списках.
     """
     with sync_session() as session:
-        all_products = {p.артикул: p for p in session.execute(select(Product)).scalars()}
+        all_products = {
+            p.артикул: p for p in session.execute(select(Product)).scalars()
+        }
         all_saved_items = session.execute(select(SavedListItem)).scalars().all()
 
         collected_data = {}
@@ -119,7 +125,7 @@ def orm_get_all_collected_items_sync() -> list[dict]:
                 continue
 
             product_info = all_products[article]
-            
+
             if article in collected_data:
                 collected_data[article]["quantity"] += item.quantity
             else:
@@ -129,7 +135,7 @@ def orm_get_all_collected_items_sync() -> list[dict]:
                     "name": product_info.назва,
                     "quantity": item.quantity,
                 }
-        
+
         return list(collected_data.values())
 
 
@@ -141,14 +147,14 @@ def orm_delete_all_saved_lists_sync() -> int:
         lists_count = session.execute(select(func.count(SavedList.id))).scalar_one()
         if lists_count == 0:
             return 0
-        
+
         session.execute(delete(SavedListItem))
         session.execute(delete(SavedList))
         session.commit()
-        
+
         if os.path.exists(ARCHIVES_PATH):
             shutil.rmtree(ARCHIVES_PATH)
-        
+
         return lists_count
 
 
@@ -174,15 +180,19 @@ def orm_delete_lists_older_than_sync(hours: int) -> int:
     """
     with sync_session() as session:
         expire_time = datetime.now() - timedelta(hours=hours)
-        
-        lists_to_delete = session.execute(select(SavedList).where(SavedList.created_at < expire_time)).scalars().all()
-        
+
+        lists_to_delete = (
+            session.execute(select(SavedList).where(SavedList.created_at < expire_time))
+            .scalars()
+            .all()
+        )
+
         if not lists_to_delete:
             return 0
-            
+
         count = len(lists_to_delete)
         list_ids_to_delete = [lst.id for lst in lists_to_delete]
-        
+
         for lst in lists_to_delete:
             if os.path.exists(lst.file_path):
                 try:
@@ -191,10 +201,14 @@ def orm_delete_lists_older_than_sync(hours: int) -> int:
                     if not os.listdir(user_dir):
                         os.rmdir(user_dir)
                 except OSError as e:
-                    logger.error(f"Помилка видалення архівного файлу або папки {lst.file_path}: {e}")
+                    logger.error(
+                        f"Помилка видалення архівного файлу або папки {lst.file_path}: {e}"
+                    )
 
-        session.execute(delete(SavedListItem).where(SavedListItem.list_id.in_(list_ids_to_delete)))
+        session.execute(
+            delete(SavedListItem).where(SavedListItem.list_id.in_(list_ids_to_delete))
+        )
         session.execute(delete(SavedList).where(SavedList.id.in_(list_ids_to_delete)))
         session.commit()
-        
+
         return count

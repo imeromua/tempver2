@@ -8,8 +8,8 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.exc import SQLAlchemyError
 
 from database.orm import orm_get_user_lists_archive
+
 # --- ЗМІНА: Імпортуємо потрібні хелпери ---
-from handlers.user.list_management import back_to_main_menu
 from keyboards.inline import get_archive_kb
 from lexicon.lexicon import LEXICON
 
@@ -25,7 +25,7 @@ async def show_archive_handler(callback: CallbackQuery, state: FSMContext):
     Тепер коректно редагує повідомлення та оновлює стан.
     """
     user_id = callback.from_user.id
-    
+
     try:
         logger.info("Користувач %s запитує свій архів.", user_id)
         archived_lists = await orm_get_user_lists_archive(user_id)
@@ -39,23 +39,24 @@ async def show_archive_handler(callback: CallbackQuery, state: FSMContext):
             created_date = lst.created_at.strftime("%d.%m.%Y о %H:%M")
             response_text.append(
                 LEXICON.ARCHIVE_ITEM.format(
-                    i=i, 
-                    file_name=lst.file_name, 
-                    created_date=created_date
+                    i=i, file_name=lst.file_name, created_date=created_date
                 )
             )
-        
+
         await callback.message.edit_text(
-            "\n".join(response_text), 
-            reply_markup=get_archive_kb(user_id)
+            "\n".join(response_text), reply_markup=get_archive_kb(user_id)
         )
         # Оновлюємо ID головного повідомлення
         await state.update_data(main_message_id=callback.message.message_id)
         await callback.answer()
-        
+
     except SQLAlchemyError as e:
-        logger.error("Помилка БД при отриманні архіву для %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Помилка БД при отриманні архіву для %s: %s", user_id, e, exc_info=True
+        )
         await callback.message.answer(LEXICON.UNEXPECTED_ERROR)
     except Exception as e:
-        logger.error("Неочікувана помилка при перегляді архіву %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Неочікувана помилка при перегляді архіву %s: %s", user_id, e, exc_info=True
+        )
         await callback.message.answer(LEXICON.UNEXPECTED_ERROR)

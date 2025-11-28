@@ -27,12 +27,8 @@ async def orm_upsert_user(
     """
     async with async_session() as session:
         # Створюємо об'єкт користувача
-        user = User(
-            id=user_id,
-            username=username,
-            first_name=first_name
-        )
-        # merge перевіряє PK (id). 
+        user = User(id=user_id, username=username, first_name=first_name)
+        # merge перевіряє PK (id).
         # Якщо запис існує — оновлює його, якщо ні — створює новий.
         await session.merge(user)
         await session.commit()

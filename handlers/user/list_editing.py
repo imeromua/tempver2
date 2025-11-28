@@ -3,26 +3,25 @@
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (CallbackQuery, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from database.engine import async_session
-from database.orm import (orm_delete_temp_list_item, orm_get_product_by_id,
-                          orm_get_temp_list,
-                          orm_update_temp_list_item_quantity)
-# --- ЗМІНА: Імпортуємо потрібні хелпери ---
-from handlers.common import clean_previous_keyboard
-from handlers.user.list_management import _display_user_list
-from keyboards.inline import get_list_for_editing_kb
-from lexicon.lexicon import LEXICON
+from database.orm import (
+    orm_delete_temp_list_item,
+    orm_get_product_by_id,
+    orm_get_temp_list,
+    orm_update_temp_list_item_quantity,
+)
+from keyboards.reply import get_my_list_submenu_kb
 
-# Налаштовуємо логер
 logger = logging.getLogger(__name__)
-
-# Створюємо роутер
 router = Router()
 
 
@@ -31,114 +30,141 @@ class ListEditingStates(StatesGroup):
     waiting_for_new_quantity = State()
 
 
-async def show_list_in_edit_mode(bot: Bot, chat_id: int, message_id: int, user_id: int, state: FSMContext):
-    """
-    Допоміжна функція для відображення списку в режимі редагування.
-    """
+# --- ДОПОМІЖНА ФУНКЦІЯ: ГЕНЕРАЦІЯ ІНЛАЙН СПИСКУ ---
+def get_editing_kb(temp_list) -> InlineKeyboardMarkup:
+    kb = []
+    for item in temp_list:
+        # Кнопка: "Артикул | Назва (К-сть)" -> callback="edit_item:ID"
+        btn_text = f"✏️ {item.quantity} шт. | {item.product.назва[:20]}"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    text=btn_text, callback_data=f"edit_item:{item.product.id}"
+                )
+            ]
+        )
+
+    # Кнопка завершення
+    kb.append(
+        [
+            InlineKeyboardButton(
+                text="✅ Завершити редагування", callback_data="edit_list:finish"
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+# --- ВІДОБРАЖЕННЯ ЕДИТОРА ---
+async def show_list_in_edit_mode(
+    bot: Bot, chat_id: int, user_id: int, state: FSMContext
+):
     temp_list = await orm_get_temp_list(user_id)
 
     if not temp_list:
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=LEXICON.EMPTY_LIST)
-        except TelegramBadRequest:
-            pass
+        await bot.send_message(
+            chat_id, "📭 Список порожній.", reply_markup=get_my_list_submenu_kb()
+        )
+        await state.clear()
         return
 
-    department_id = temp_list[0].product.відділ
-    header = f"{LEXICON.LIST_EDIT_MODE_TITLE} (Відділ: {department_id})\n\n{LEXICON.LIST_EDIT_PROMPT}"
+    text = "✏️ **Режим редагування**\nНатисніть на товар, щоб змінити кількість:"
+    kb = get_editing_kb(temp_list)
 
-    try:
-        await bot.edit_message_text(
-            text=header,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=get_list_for_editing_kb(temp_list)
-        )
-        # Оновлюємо ID, оскільки цей екран тепер головний
-        await state.update_data(main_message_id=message_id)
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            logger.error("Помилка редагування повідомлення в режим редагування: %s", e)
+    # Надсилаємо нове повідомлення (або редагуємо старе, якщо зберегли ID)
+    # Для надійності в гібридному режимі краще надіслати нове
+    sent = await bot.send_message(chat_id, text, reply_markup=kb)
+    await state.update_data(editor_message_id=sent.message_id)
 
 
-@router.callback_query(F.data == "edit_list:start")
-async def start_list_editing_handler(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await state.set_state(ListEditingStates.editing_list)
-    await show_list_in_edit_mode(bot, callback.message.chat.id, callback.message.message_id, callback.from_user.id, state)
-    await callback.answer("Режим редагування увімкнено")
+# --- ХЕНДЛЕРИ ---
 
 
+# Обробка натискання на товар
 @router.callback_query(ListEditingStates.editing_list, F.data.startswith("edit_item:"))
-async def edit_item_handler(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    try:
-        product_id = int(callback.data.split(":", 1)[1])
-        async with async_session() as session:
-            product = await orm_get_product_by_id(session, product_id)
-            if not product:
-                await callback.answer(LEXICON.PRODUCT_NOT_FOUND, show_alert=True)
-                return
+async def edit_item_handler(callback: CallbackQuery, state: FSMContext):
+    product_id = int(callback.data.split(":")[1])
+    await state.update_data(product_id=product_id)
 
-        await state.update_data(product_id=product.id)
-        
-        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=LEXICON.BUTTON_CANCEL_INPUT, callback_data="edit_list:cancel_input")
-        ]])
-        
-        await bot.edit_message_text(
-            text=LEXICON.EDIT_ITEM_QUANTITY_PROMPT.format(product_name=product.назва),
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            reply_markup=cancel_kb,
-            parse_mode=None
-        )
-        
-        await state.set_state(ListEditingStates.waiting_for_new_quantity)
-        await callback.answer()
+    async with async_session() as session:
+        product = await orm_get_product_by_id(session, product_id)
 
-    except Exception as e:
-        logger.error("Помилка при виборі товару для редагування: %s", e, exc_info=True)
-        await callback.answer(LEXICON.UNEXPECTED_ERROR, show_alert=True)
+    await callback.message.edit_text(
+        f"📝 Введіть нову кількість для: **{product.назва}**\n(Або надішліть 0 для видалення)",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🔙 Скасувати", callback_data="edit_item:cancel"
+                    )
+                ]
+            ]
+        ),
+    )
+    await state.set_state(ListEditingStates.waiting_for_new_quantity)
 
 
-@router.callback_query(ListEditingStates.waiting_for_new_quantity, F.data == "edit_list:cancel_input")
-async def cancel_quantity_input_handler(callback: CallbackQuery, state: FSMContext, bot: Bot):
+# Скасування вводу кількості
+@router.callback_query(
+    ListEditingStates.waiting_for_new_quantity, F.data == "edit_item:cancel"
+)
+async def cancel_edit_item(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.set_state(ListEditingStates.editing_list)
-    await show_list_in_edit_mode(bot, callback.message.chat.id, callback.message.message_id, callback.from_user.id, state)
-    await callback.answer("Скасовано")
+    # Перемальовуємо список
+    await show_list_in_edit_mode(
+        bot, callback.message.chat.id, callback.from_user.id, state
+    )
+    # Видаляємо старе повідомлення про ввід (опціонально)
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
-@router.message(ListEditingStates.waiting_for_new_quantity, F.text.isdigit())
-async def process_new_quantity_handler(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
+# Обробка введення числа (кількості)
+@router.message(ListEditingStates.waiting_for_new_quantity)
+async def process_new_quantity(message: Message, state: FSMContext, bot: Bot):
+    if not message.text.isdigit():
+        await message.answer("⚠️ Введіть число.")
+        return
+
+    qty = int(message.text)
     data = await state.get_data()
     product_id = data.get("product_id")
-    edit_list_message_id = data.get("main_message_id") # Беремо ID звідси
+    user_id = message.from_user.id
 
+    # Оновлюємо БД
+    if qty > 0:
+        await orm_update_temp_list_item_quantity(user_id, product_id, qty)
+    else:
+        await orm_delete_temp_list_item(user_id, product_id)
+        await message.answer("🗑 Товар видалено.")
+
+    # Повертаємось до списку
+    await state.set_state(ListEditingStates.editing_list)
+    # Видаляємо повідомлення юзера з цифрою (для чистоти)
     try:
-        new_quantity = int(message.text)
-        
-        if new_quantity > 0:
-            await orm_update_temp_list_item_quantity(user_id, product_id, new_quantity)
-        else:
-            await orm_delete_temp_list_item(user_id, product_id)
-
-        await show_list_in_edit_mode(bot, message.chat.id, edit_list_message_id, user_id, state)
-        
-    except Exception as e:
-        logger.error("Помилка при оновленні кількості: %s", e, exc_info=True)
-        await message.answer(LEXICON.UNEXPECTED_ERROR)
-    finally:
         await message.delete()
-        await state.set_state(ListEditingStates.editing_list)
+    except Exception:
+        pass
+
+    # Видаляємо старе повідомлення едітора, якщо воно є
+    editor_msg_id = data.get("editor_message_id")
+    if editor_msg_id:
+        try:
+            await bot.delete_message(message.chat.id, editor_msg_id)
+        except Exception:
+            pass
+
+    await show_list_in_edit_mode(bot, message.chat.id, user_id, state)
 
 
+# ЗАВЕРШЕННЯ РЕДАГУВАННЯ (Натиснули кнопку "Завершити")
 @router.callback_query(ListEditingStates.editing_list, F.data == "edit_list:finish")
-async def finish_list_editing_handler(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await state.set_state(None)
-    
-    # --- ЗМІНА: Видаляємо клавіатуру, а не повідомлення ---
-    await callback.message.edit_reply_markup(reply_markup=None)
-    
-    await _display_user_list(bot, callback.message.chat.id, callback.from_user.id, state)
-    
-    await callback.answer("Редагування завершено")
+async def finish_editing(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    # ВАЖЛИВО: Повертаємо Reply-клавіатуру
+    await callback.message.answer(
+        "✅ Редагування завершено.", reply_markup=get_my_list_submenu_kb()
+    )

@@ -1,5 +1,6 @@
 import re
 
+
 def escape_markdown(text: str) -> str:
     """
     Екранує спеціальні символи для старого Markdown, який використовується в боті.
