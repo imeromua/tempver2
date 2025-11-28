@@ -2,142 +2,165 @@
 
 import logging
 
-from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
-from sqlalchemy.exc import SQLAlchemyError
+from aiogram.types import Message
+from thefuzz import fuzz
 
 from database.engine import async_session
-from database.orm import orm_find_products, orm_get_product_by_id
-from handlers.common import clean_previous_keyboard
-
-# --- ЗМІНА: Імпортуємо back_to_main_menu для коректної навігації ---
-from handlers.user.list_management import back_to_main_menu
-from keyboards.inline import get_search_results_kb
-from lexicon.lexicon import LEXICON
-from utils.card_generator import send_or_edit_product_card
+from database.orm import orm_search_products_fuzzy
+from handlers.user.item_addition import (
+    ItemAdditionStates,
+    start_quantity_selection,
+)
+from keyboards.reply import get_main_menu_kb
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-class SearchStates(StatesGroup):
-    showing_results = State()
+# ==============================================================================
+# 🔍 ПОШУК ТОВАРІВ (ПИЛОСОС - ЛОВИТЬ ВЕСЬ ТЕКСТ)
+# ==============================================================================
 
 
 @router.message(F.text)
-async def search_handler(message: Message, bot: Bot, state: FSMContext):
+async def user_search_handler(message: Message, state: FSMContext):
     """
-    Обробник пошуку. Тепер видаляє клавіатуру з попереднього меню.
+    Пошук товарів за текстом користувача.
+    ВАЖЛИВО: Цей handler повинен бути останнім в bot.py!
+    Він ловить весь текст, який не обробили інші хендлери.
     """
-    # Не скидаємо стан повністю, щоб зберегти main_message_id
-    await state.set_state(None)
+    user_id = message.from_user.id
+    query = message.text.strip()
 
-    search_query = message.text
-
-    known_commands = {
-        LEXICON.BUTTON_NEW_LIST,
-        LEXICON.BUTTON_MY_LIST,
-        LEXICON.BUTTON_ARCHIVE,
-        LEXICON.BUTTON_ADMIN_PANEL,
-    }
-    if search_query.startswith("/") or search_query in known_commands:
+    # Ігноруємо короткі запити
+    if len(query) < 2:
+        await message.answer(
+            "🔍 Введіть назву або артикул товару (мінімум 2 символи)."
+        )
         return
 
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        logger.warning("Не вдалося видалити пошуковий запит користувача.")
-
-    if len(search_query) < 3:
-        # Це тимчасове повідомлення, воно не повинно мати клавіатури
-        await message.answer(LEXICON.SEARCH_TOO_SHORT, reply_markup=None)
+    # Ігноруємо команди та спеціальні символи
+    if query.startswith(("/", "!", ".", "@")):
         return
 
-    try:
-        # --- ОНОВЛЕНА ЛОГІКА: Прибираємо стару клавіатуру ---
-        await clean_previous_keyboard(state, bot, message.chat.id)
-        # --- КІНЕЦЬ ОНОВЛЕНОЇ ЛОГІКИ ---
+    # Пошук в БД
+    await message.answer("🔍 Шукаю...")
 
-        products = await orm_find_products(search_query)
-        if not products:
-            sent_message = await message.answer(
-                LEXICON.SEARCH_NO_RESULTS, reply_markup=None
+    try:
+        async with async_session() as session:
+            # Спочатку шукаємо точний збіг по артикулу
+            results = await orm_search_products_fuzzy(session, query, limit=10)
+
+            if not results:
+                await message.answer(
+                    f"❌ Нічого не знайдено за запитом: `{query}`\n\n"
+                    f"Спробуйте:\n"
+                    f"• Артикул товару\n"
+                    f"• Назву товару\n"
+                    f"• Частину назви"
+                )
+                return
+
+            # Якщо знайдено тільки 1 товар - відразу переходимо до вибору кількості
+            if len(results) == 1:
+                product = results[0]
+                await message.answer(
+                    f"✅ Знайдено: **{product.назва}**\n"
+                    f"Артикул: `{product.артикул}`\n"
+                    f"Відділ: {product.відділ}\n"
+                    f"Залишок: {product.кількість}"
+                )
+                await start_quantity_selection(message, state, product.id)
+                return
+
+            # Якщо знайдено кілька - показуємо список для вибору
+            text_lines = [f"🔍 Знайдено товарів: **{len(results)}**\n"]
+
+            for idx, product in enumerate(results[:10], start=1):
+                # Рахуємо схожість для сортування
+                similarity_name = fuzz.partial_ratio(
+                    query.lower(), product.назва.lower()
+                )
+                similarity_article = fuzz.ratio(
+                    query.lower(), product.артикул.lower()
+                )
+                max_similarity = max(similarity_name, similarity_article)
+
+                text_lines.append(
+                    f"{idx}. `{product.артикул}` **{product.назва}**\n"
+                    f"   Відділ: {product.відділ} | Залишок: {product.кількість}\n"
+                    f"   Схожість: {max_similarity}%\n"
+                )
+
+            text_lines.append(
+                "\n📝 **Оберіть товар:**\n"
+                "Введіть номер (наприклад: `1`) або артикул для уточнення."
             )
-            # Зберігаємо ID, щоб потім його можна було прибрати
-            await state.update_data(main_message_id=sent_message.message_id)
+
+            full_text = "\n".join(text_lines)
+            if len(full_text) > 4000:
+                full_text = full_text[:3900] + "\n... (список обрізано)"
+
+            await message.answer(full_text)
+
+            # Зберігаємо результати пошуку для вибору
+            await state.update_data(search_results=[p.id for p in results])
+            await state.set_state(ItemAdditionStates.selecting_quantity)
+
+    except Exception as e:
+        logger.error("Помилка пошуку товарів: %s", e, exc_info=True)
+        await message.answer("❌ Помилка пошуку. Спробуйте ще раз.")
+
+
+# ==============================================================================
+# 🔢 ВИБІР ТОВАРУ ЗІ СПИСКУ РЕЗУЛЬТАТІВ
+# ==============================================================================
+
+
+@router.message(ItemAdditionStates.selecting_quantity, F.text.regexp(r"^\d+$"))
+async def select_product_from_results(message: Message, state: FSMContext):
+    """
+    Обробляє вибір товару за номером зі списку результатів пошуку.
+    Приклад: користувач ввів '3' після того, як побачив список товарів.
+    """
+    data = await state.get_data()
+    search_results = data.get("search_results", [])
+
+    # Перевіряємо, чи є збережені результати пошуку
+    if not search_results:
+        # Якщо немає результатів пошуку, можливо це вибір кількості
+        # Передаємо обробку в item_addition.py
+        return
+
+    try:
+        item_number = int(message.text)
+
+        if item_number < 1 or item_number > len(search_results):
+            await message.answer(
+                f"❌ Невірний номер. Оберіть від 1 до {len(search_results)}."
+            )
             return
 
-        if len(products) == 1:
-            sent_message = await send_or_edit_product_card(
-                bot, message.chat.id, message.from_user.id, products[0]
-            )
-            if sent_message:
-                await state.update_data(main_message_id=sent_message.message_id)
-        else:
-            await state.set_state(SearchStates.showing_results)
-            await state.update_data(last_query=search_query)
+        # Отримуємо ID вибраного товару
+        selected_product_id = search_results[item_number - 1]
 
-            sent_message = await message.answer(
-                LEXICON.SEARCH_MANY_RESULTS,
-                reply_markup=get_search_results_kb(products),
-            )
-            await state.update_data(main_message_id=sent_message.message_id)
+        # Очищаємо результати пошуку зі стану
+        await state.update_data(search_results=None)
 
-    except SQLAlchemyError as e:
-        logger.error("Помилка пошуку товарів для запиту '%s': %s", search_query, e)
-        await message.answer(LEXICON.UNEXPECTED_ERROR)
-
-
-@router.callback_query(F.data.startswith("product:"))
-async def show_product_from_button(
-    callback: CallbackQuery, bot: Bot, state: FSMContext
-):
-    await callback.answer()
-    try:
-        product_id = int(callback.data.split(":", 1)[1])
-
-        fsm_data = await state.get_data()
-        last_query = fsm_data.get("last_query")
-
+        # Запускаємо вибір кількості
         async with async_session() as session:
-            product = await orm_get_product_by_id(session, product_id)
+            from database.orm import orm_get_product_by_id
+
+            product = await orm_get_product_by_id(session, selected_product_id)
             if product:
-                # Редагуємо повідомлення зі списком результатів, перетворюючи його на картку
-                sent_message = await send_or_edit_product_card(
-                    bot=bot,
-                    chat_id=callback.message.chat.id,
-                    user_id=callback.from_user.id,
-                    product=product,
-                    message_id=callback.message.message_id,  # Редагуємо існуюче
-                    search_query=last_query,
+                await message.answer(
+                    f"✅ Обрано: **{product.назва}**\n"
+                    f"Артикул: `{product.артикул}`"
                 )
-                if sent_message:
-                    await state.update_data(main_message_id=sent_message.message_id)
-            else:
-                await callback.message.edit_text(LEXICON.PRODUCT_NOT_FOUND)
 
-    except (ValueError, IndexError, SQLAlchemyError) as e:
-        logger.error("Помилка БД при отриманні товару: %s", e)
-        await callback.message.edit_text(LEXICON.UNEXPECTED_ERROR)
+        await start_quantity_selection(message, state, selected_product_id)
 
-
-@router.callback_query(SearchStates.showing_results, F.data == "back_to_results")
-async def back_to_results_handler(callback: CallbackQuery, state: FSMContext):
-    fsm_data = await state.get_data()
-    last_query = fsm_data.get("last_query")
-
-    if not last_query:
-        await back_to_main_menu(callback, state)
-        await callback.answer("Помилка: запит не знайдено", show_alert=True)
-        return
-
-    products = await orm_find_products(last_query)
-
-    await callback.message.edit_text(
-        LEXICON.SEARCH_MANY_RESULTS, reply_markup=get_search_results_kb(products)
-    )
-    await state.update_data(main_message_id=callback.message.message_id)
-    await callback.answer()
+    except ValueError:
+        await message.answer("❌ Невірний формат. Введіть номер товару.")

@@ -62,7 +62,7 @@ ADMIN_IDS = get_admin_ids()
 
 # --- Конфігурація Бази Даних ---
 # Визначаємо тип бази даних: 'postgres' або 'sqlite'
-DB_TYPE = os.getenv("DB_TYPE", "postgres")
+DB_TYPE = os.getenv("DB_TYPE", "postgres").lower()
 
 if DB_TYPE == "postgres":
 
@@ -93,6 +93,8 @@ if DB_TYPE == "postgres":
         f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
 
+    logger.info("Використовується PostgreSQL база даних: %s@%s:%s/%s", DB_USER, DB_HOST, DB_PORT, DB_NAME)
+
 elif DB_TYPE == "sqlite":
     DB_NAME = os.getenv("DB_NAME", "bot_database.db")
 
@@ -102,7 +104,7 @@ elif DB_TYPE == "sqlite":
     # Синхронний драйвер (стандартний sqlite3)
     SYNC_DATABASE_URL = f"sqlite:///{DB_NAME}"
 
-    logger.info(f"Використовується локальна база даних SQLite: {DB_NAME}")
+    logger.info("Використовується локальна база даних SQLite: %s", DB_NAME)
 
 else:
     logger.critical(
@@ -113,4 +115,4 @@ else:
 
 # --- Конфігурація Сховища ---
 ARCHIVES_PATH = "archives"
-BACKUP_DIR = "backups"  # <--- ДОДАНО ЦЮ ЗМІННУ
+BACKUP_DIR = "backups"
