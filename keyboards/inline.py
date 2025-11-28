@@ -5,7 +5,6 @@ from typing import Union
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-
 # --- КНОПКИ ДЛЯ КАРТКИ ТОВАРУ ---
 def get_product_actions_kb(
     product_id: int,

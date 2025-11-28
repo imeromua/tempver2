@@ -6,10 +6,7 @@ from aiogram import Bot, F, Router  # <--- Додав F сюди
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import (  # <--- Додав CallbackQuery
-    CallbackQuery,
-    Message,
-)
+from aiogram.types import CallbackQuery, Message  # <--- Додав CallbackQuery
 
 from config import ADMIN_IDS
 from database.orm import orm_upsert_user

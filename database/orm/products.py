@@ -115,7 +115,6 @@ def _sync_incremental_import(file_path: str, user_id: int) -> dict:
             prod = existing_products[art]
             new_item = new_data_map[art]
 
-
             # А. Реактивація (якщо товар повернувся)
             if not prod.активний:
                 new_item["активний"] = True
