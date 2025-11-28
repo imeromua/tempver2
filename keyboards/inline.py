@@ -2,12 +2,13 @@
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from database.models import Product
 
 def get_product_inline_kb(product_id: int, current_qty: int = 1) -> InlineKeyboardMarkup:
     """
-    Layout:
-    [➖] [0 шт] [➕] (якщо 0)
-    [➖] [✅ N шт] [➕] (якщо > 0)
+    Картка товару:
+    [➖] [✅ N шт] [➕]
+    [📥 Додати все] [📝 Інша кількість]
     """
     builder = InlineKeyboardBuilder()
 
@@ -43,4 +44,40 @@ def get_product_inline_kb(product_id: int, current_qty: int = 1) -> InlineKeyboa
         ),
     )
 
+    return builder.as_markup()
+
+def get_search_results_kb(products: list[Product]) -> InlineKeyboardMarkup:
+    """
+    Генерує список кнопок для результатів пошуку.
+    Кожна кнопка: "Артикул | Назва" -> callback: search:prod:ID
+    """
+    builder = InlineKeyboardBuilder()
+
+    for product in products:
+        # Обрізаємо назву, якщо дуже довга
+        name = product.назва[:30] + "..." if len(product.назва) > 30 else product.назва
+        text = f"{product.артикул} | {name}"
+        
+        builder.row(
+            InlineKeyboardButton(
+                text=text,
+                callback_data=f"search:prod:{product.id}"
+            )
+        )
+    
+    # Можна додати кнопку "Скасувати пошук", якщо треба
+    # builder.row(InlineKeyboardButton(text="❌ Скасувати", callback_data="search:cancel"))
+
+    return builder.as_markup()
+
+def get_yes_no_kb(action: str) -> InlineKeyboardMarkup:
+    """
+    Універсальна клавіатура підтвердження.
+    action: унікальний ідентифікатор дії (наприклад, 'import', 'clean_db')
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Так, підтверджую", callback_data=f"confirm:{action}:yes"),
+        InlineKeyboardButton(text="❌ Ні, скасувати", callback_data=f"confirm:{action}:no")
+    )
     return builder.as_markup()

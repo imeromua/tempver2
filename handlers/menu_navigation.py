@@ -9,7 +9,7 @@ import pandas as pd
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, Message, CallbackQuery
 
 # --- Імпорти конфігурації та БД ---
 from config import ADMIN_IDS, ARCHIVES_PATH
@@ -43,20 +43,18 @@ from keyboards.reply import (
     BTN_MY_ARCHIVES,
     BTN_MY_LIST,
     BTN_NEW_LIST,
-    BTN_NO_CANCEL,
     BTN_SAVE_LIST,
     BTN_TO_MAIN_MENU,
     BTN_USERS,
     BTN_UTIL_CLEAN_DB,
     BTN_UTILITIES,
-    BTN_YES_CONFIRM,
     get_admin_menu_kb,
     get_archives_submenu_kb,
-    get_confirmation_kb,
     get_main_menu_kb,
     get_my_list_submenu_kb,
     get_utilities_menu_kb,
 )
+from keyboards.inline import get_yes_no_kb # 🔥 Нова інлайн клавіатура
 from utils.list_processor import process_and_save_list
 
 logger = logging.getLogger(__name__)
@@ -64,19 +62,8 @@ router = Router()
 
 
 # ==============================================================================
-# 📋 СТАНИ ДЛЯ ПІДТВЕРДЖЕННЯ ДІЙ
-# ==============================================================================
-
-
-class ConfirmationStates(StatesGroup):
-    waiting_delete_archives = State()
-    waiting_clean_db = State()
-
-
-# ==============================================================================
 # 🚪 ВХІД В МЕНЮ (Адмінка та Головне)
 # ==============================================================================
-
 
 @router.message(F.text == BTN_ADMIN_PANEL)
 async def open_admin_panel(message: Message):
@@ -85,7 +72,6 @@ async def open_admin_panel(message: Message):
     await message.answer(
         "👑 **Панель адміністратора**", reply_markup=get_admin_menu_kb()
     )
-
 
 @router.message(F.text == BTN_TO_MAIN_MENU)
 async def exit_admin_panel(message: Message, state: FSMContext):
@@ -97,7 +83,6 @@ async def exit_admin_panel(message: Message, state: FSMContext):
 # ==============================================================================
 # 👤 КОРИСТУВАЧ: ГОЛОВНЕ МЕНЮ
 # ==============================================================================
-
 
 @router.message(F.text == BTN_MY_LIST)
 async def open_my_list_menu(message: Message):
@@ -163,29 +148,18 @@ async def create_new_list(message: Message):
 # 📋 КОРИСТУВАЧ: ПІДМЕНЮ "МІЙ СПИСОК"
 # ==============================================================================
 
-
 @router.message(F.text == BTN_BACK)
 async def go_back_logic(message: Message, state: FSMContext):
     user_id = message.from_user.id
     is_admin = user_id in ADMIN_IDS
-    current_state = await state.get_state()
     await state.clear()
-
-    # Визначаємо куди повертатись в залежності від поточного стану
-    if current_state in [
-        ConfirmationStates.waiting_delete_archives.state,
-        ConfirmationStates.waiting_clean_db.state,
-    ]:
-        if is_admin:
-            await message.answer("🔙 Повернення:", reply_markup=get_admin_menu_kb())
-        else:
-            await message.answer(
-                "🔙 Головне меню:", reply_markup=get_main_menu_kb(False)
-            )
+    
+    # Повертаємось завжди в головне або адмін (якщо були там)
+    # Тут спрощена логіка, бо підтвердження тепер інлайн і не змінюють "меню"
+    if is_admin:
+         await message.answer("🔙 Головне меню:", reply_markup=get_main_menu_kb(True))
     else:
-        await message.answer(
-            "🔙 Головне меню:", reply_markup=get_main_menu_kb(is_admin)
-        )
+        await message.answer("🔙 Головне меню:", reply_markup=get_main_menu_kb(False))
 
 
 @router.message(F.text == BTN_DELETE_LIST)
@@ -197,10 +171,8 @@ async def delete_current_list(message: Message):
     )
 
 
-# ВИПРАВЛЕНО: Використовуємо BTN_SAVE_LIST замість жорсткого тексту
 @router.message(F.text == BTN_SAVE_LIST)
 async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bot):
-    """Тригер для збереження поточного списку."""
     user_id = message.from_user.id
     msg = await message.answer("⏳ Зберігаю список...")
 
@@ -208,9 +180,7 @@ async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bo
     surplus_list_path = None
 
     try:
-        # БЕЗ session - функція створює власну
         main_list_path, surplus_list_path = await process_and_save_list(user_id)
-
         await msg.delete()
 
         if not main_list_path and not surplus_list_path:
@@ -221,7 +191,6 @@ async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bo
             )
             return
 
-        # Відправляємо основне замовлення
         if main_list_path and os.path.exists(main_list_path):
             await bot.send_document(
                 user_id,
@@ -229,9 +198,7 @@ async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bo
                 caption="✅ Ваше замовлення\n\nТовари доступні для збору.",
             )
             os.remove(main_list_path)
-            logger.info("Відправлено основне замовлення для user_id %s", user_id)
 
-        # Відправляємо дефіцит (якщо є)
         if surplus_list_path and os.path.exists(surplus_list_path):
             await bot.send_document(
                 user_id,
@@ -239,7 +206,6 @@ async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bo
                 caption="⚠️ Дефіцит\n\nЦих товарів недостатньо або немає на складі.",
             )
             os.remove(surplus_list_path)
-            logger.info("Відправлено список дефіциту для user_id %s", user_id)
 
         success_message = (
             "✅ Список успішно збережено!\n\n"
@@ -247,39 +213,18 @@ async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bo
             "🗑 Поточний список очищено\n\n"
             "Можете починати новий збір!"
         )
-
         await message.answer(
             success_message, reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
         )
 
-        logger.info("Користувач %s зберіг список", user_id)
-
     except Exception as e:
         logger.error("Save list error: %s", e, exc_info=True)
-
-        try:
-            await msg.delete()
-        except:
-            pass
-
+        try: await msg.delete()
+        except: pass
         await message.answer(
-            "❌ Помилка збереження списку\n\n"
-            "Спробуйте ще раз або зверніться до адміністратора.",
+            "❌ Помилка збереження списку",
             reply_markup=get_main_menu_kb(user_id in ADMIN_IDS),
         )
-
-        # Видаляємо файли у разі помилки
-        if main_list_path and os.path.exists(main_list_path):
-            try:
-                os.remove(main_list_path)
-            except:
-                pass
-
-        if surplus_list_path and os.path.exists(surplus_list_path):
-            try:
-                os.remove(surplus_list_path)
-            except:
-                pass
 
 
 @router.message(F.text == BTN_EDIT_LIST)
@@ -289,9 +234,8 @@ async def edit_list_trigger(message: Message, state: FSMContext, bot: Bot):
 
 
 # ==============================================================================
-# 🗂 КОРИСТУВАЧ: ПІДМЕНЮ "МОЇ АРХІВИ"
+# 🗂 КОРИСТУВАЧ: АРХІВИ
 # ==============================================================================
-
 
 @router.message(F.text == BTN_DOWNLOAD_ALL)
 async def download_all_archives(message: Message):
@@ -310,50 +254,49 @@ async def download_all_archives(message: Message):
 
 
 @router.message(F.text == BTN_DELETE_ALL_ARCHIVES)
-async def delete_all_archives_trigger(message: Message, state: FSMContext):
-    await state.set_state(ConfirmationStates.waiting_delete_archives)
+async def delete_all_archives_trigger(message: Message):
+    """
+    Тригер видалення архівів. 
+    Відправляє Inline клавіатуру для підтвердження.
+    """
     await message.answer(
         "⚠️ **Ви точно хочете видалити ВСЮ історію?**\n\nЦю дію неможливо скасувати.",
-        reply_markup=get_confirmation_kb(),
+        reply_markup=get_yes_no_kb("del_archives") # confirm:del_archives:yes/no
     )
 
-
-@router.message(ConfirmationStates.waiting_delete_archives, F.text == BTN_YES_CONFIRM)
-async def confirm_delete_archives(message: Message, state: FSMContext):
+@router.callback_query(F.data == "confirm:del_archives:yes")
+async def confirm_delete_archives(callback: CallbackQuery):
     from handlers.admin.archive_handlers import _delete_user_archives
-
-    user_id = message.from_user.id
+    
+    await callback.message.delete() # Видаляємо питання
+    
+    user_id = callback.from_user.id
     await _delete_user_archives(user_id)
-    await state.clear()
 
     is_admin = user_id in ADMIN_IDS
-    await message.answer(
+    await callback.message.answer(
         "✅ Всі ваші архіви видалено.", reply_markup=get_main_menu_kb(is_admin)
     )
+    await callback.answer()
 
-
-@router.message(ConfirmationStates.waiting_delete_archives, F.text == BTN_NO_CANCEL)
-async def cancel_delete_archives(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "❌ Видалення скасовано.", reply_markup=get_archives_submenu_kb()
-    )
+@router.callback_query(F.data == "confirm:del_archives:no")
+async def cancel_delete_archives(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer("❌ Видалення скасовано.")
+    await callback.answer()
 
 
 # ==============================================================================
 # 👑 АДМІНКА: ДІЇ
 # ==============================================================================
 
-
 @router.message(F.text == BTN_IMPORT)
 async def admin_import_trigger(message: Message, state: FSMContext, bot: Bot):
     await proceed_with_import(message, state, bot)
 
-
 @router.message(F.text == BTN_EXPORT_STOCK)
 async def admin_export_stock(message: Message):
     await message.answer("📤 Експортую залишки...")
-
     loop = asyncio.get_running_loop()
     report_path = await loop.run_in_executor(None, _create_stock_report_sync)
 
@@ -366,11 +309,9 @@ async def admin_export_stock(message: Message):
     else:
         await message.answer("❌ Помилка створення звіту.")
 
-
 @router.message(F.text == BTN_EXPORT_COLLECTED)
 async def admin_export_collected(message: Message):
     await message.answer("📋 Формую звіт по зібраному...")
-
     loop = asyncio.get_running_loop()
     items = await loop.run_in_executor(None, orm_get_all_collected_items_sync)
 
@@ -380,43 +321,30 @@ async def admin_export_collected(message: Message):
 
     df = pd.DataFrame(items)
     df.rename(
-        columns={
-            "name": "Назва",
-            "quantity": "Кількість",
-            "department": "Відділ",
-            "group": "Група",
-        },
+        columns={"name": "Назва", "quantity": "Кількість", "department": "Відділ", "group": "Група"},
         inplace=True,
     )
-
     filename = f"collected_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     path = os.path.join(ARCHIVES_PATH, filename)
     os.makedirs(ARCHIVES_PATH, exist_ok=True)
-
     await loop.run_in_executor(None, lambda: df.to_excel(path, index=False))
 
     await message.answer_document(FSInputFile(path), caption="📋 Зібрані товари")
     if os.path.exists(path):
         os.remove(path)
 
-
 @router.message(F.text == BTN_IMPORT_COLLECTED)
 async def admin_import_collected_trigger(message: Message, state: FSMContext):
     await message.answer(
         "📉 **Імпорт зібраного (віднімання)**\n"
-        "Надішліть Excel-файл з колонками `Артикул` та `Кількість`.\n"
-        "Це відніме вказану кількість від залишків складу.",
+        "Надішліть Excel-файл з колонками `Артикул` та `Кількість`.",
         reply_markup=get_admin_menu_kb(),
     )
     await state.set_state(AdminReportStates.waiting_for_subtract_file)
 
-
 @router.message(F.text == BTN_USERS)
 async def admin_users_placeholder(message: Message):
-    await message.answer(
-        "👥 Розділ 'Користувачі' в розробці.\nТут буде список юзерів і бани."
-    )
-
+    await message.answer("👥 Розділ 'Користувачі' в розробці.")
 
 @router.message(F.text == BTN_ALL_ARCHIVES)
 async def admin_all_archives_placeholder(message: Message):
@@ -424,42 +352,35 @@ async def admin_all_archives_placeholder(message: Message):
 
 
 # ==============================================================================
-# 🛠 АДМІНКА: УТИЛІТИ
+# 🛠 АДМІНКА: УТИЛІТИ (ОЧИСТКА БД)
 # ==============================================================================
-
 
 @router.message(F.text == BTN_UTILITIES)
 async def open_utilities(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    await message.answer(
-        "🛠 **Утиліти та Інструменти**", reply_markup=get_utilities_menu_kb()
-    )
-
+    if message.from_user.id not in ADMIN_IDS: return
+    await message.answer("🛠 **Утиліти та Інструменти**", reply_markup=get_utilities_menu_kb())
 
 @router.message(F.text == BTN_UTIL_CLEAN_DB)
-async def util_clean_db_trigger(message: Message, state: FSMContext):
-    await state.set_state(ConfirmationStates.waiting_clean_db)
+async def util_clean_db_trigger(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    
+    # Інлайн підтвердження
     await message.answer(
         "🧨 **ПОВНА ОЧИСТКА БД**\n\n"
-        "Ви збираєтесь видалити:\n"
-        "- Всі товари\n- Всі списки користувачів\n- Всю історію\n\n"
+        "Ви збираєтесь видалити:\n- Всі товари\n- Всі списки\n- Всю історію\n\n"
         "Ви впевнені?",
-        reply_markup=get_confirmation_kb(),
+        reply_markup=get_yes_no_kb("clean_db") # confirm:clean_db:yes/no
     )
 
+@router.callback_query(F.data == "confirm:clean_db:yes")
+async def confirm_clean_db(callback: CallbackQuery):
+    await callback.message.delete()
+    # Тут логіка очищення (поки заглушка)
+    await callback.message.answer("✅ База даних очищена (функція в розробці).")
+    await callback.answer()
 
-@router.message(ConfirmationStates.waiting_clean_db, F.text == BTN_YES_CONFIRM)
-async def confirm_clean_db(message: Message, state: FSMContext):
-    # TODO: Викликати функцію очистки БД
-    await state.clear()
-    await message.answer(
-        "✅ База даних очищена (функція в розробці).",
-        reply_markup=get_admin_menu_kb(),
-    )
-
-
-@router.message(ConfirmationStates.waiting_clean_db, F.text == BTN_NO_CANCEL)
-async def cancel_clean_db(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Очистка скасована.", reply_markup=get_utilities_menu_kb())
+@router.callback_query(F.data == "confirm:clean_db:no")
+async def cancel_clean_db(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer("❌ Очистка скасована.")
+    await callback.answer()
