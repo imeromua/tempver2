@@ -77,9 +77,7 @@ async def download_specific_archive(message: Message):
         archive = archives[archive_number - 1]
 
         if not os.path.exists(archive.file_path):
-            await message.answer(
-                "❌ Файл не знайдено. Можливо він був видалений."
-            )
+            await message.answer("❌ Файл не знайдено. Можливо він був видалений.")
             return
 
         # Відправляємо файл

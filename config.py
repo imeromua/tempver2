@@ -93,7 +93,13 @@ if DB_TYPE == "postgres":
         f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
 
-    logger.info("Використовується PostgreSQL база даних: %s@%s:%s/%s", DB_USER, DB_HOST, DB_PORT, DB_NAME)
+    logger.info(
+        "Використовується PostgreSQL база даних: %s@%s:%s/%s",
+        DB_USER,
+        DB_HOST,
+        DB_PORT,
+        DB_NAME,
+    )
 
 elif DB_TYPE == "sqlite":
     DB_NAME = os.getenv("DB_NAME", "bot_database.db")

@@ -112,7 +112,7 @@ class ImportPreview:
 def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     """
     Автоматично визначає назви колонок за словником.
-    
+
     Returns:
         dict: {стандартна_назва: фактична_назва_в_df}
     """
@@ -154,12 +154,12 @@ def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
 def extract_article_and_name(combined_text: str) -> Tuple[str, str]:
     """
     Розділяє артикул та назву з одного рядка.
-    
+
     Формати:
     - "12345678 - Назва товару"
     - "12345678 Назва товару"
     - "12345678-Назва товару"
-    
+
     Returns:
         (артикул, назва)
     """
@@ -248,11 +248,11 @@ def process_import_dataframe(
 ) -> Tuple[pd.DataFrame, ImportValidation]:
     """
     Обробляє DataFrame для імпорту.
-    
+
     Args:
         df: Вихідний DataFrame
         column_map: Мапінг колонок (якщо None - автовизначення)
-    
+
     Returns:
         (оброблений_df, валідація)
     """
@@ -338,16 +338,18 @@ def process_import_dataframe(
                     months_no_movement = 0
 
             # Додаємо оброблений рядок
-            processed_rows.append({
-                "артикул": article,
-                "назва": name,
-                "відділ": department,
-                "група": group,
-                "кількість": str(quantity).replace(".", ","),
-                "ціна": price,
-                "сума_залишку": total_sum,
-                "місяці_без_руху": months_no_movement,
-            })
+            processed_rows.append(
+                {
+                    "артикул": article,
+                    "назва": name,
+                    "відділ": department,
+                    "група": group,
+                    "кількість": str(quantity).replace(".", ","),
+                    "ціна": price,
+                    "сума_залишку": total_sum,
+                    "місяці_без_руху": months_no_movement,
+                }
+            )
 
         except Exception as row_error:
             errors.append(f"Рядок {idx + 2}: {str(row_error)}")
@@ -386,6 +388,4 @@ def generate_import_preview(df: pd.DataFrame) -> ImportPreview:
         "has_quantity": bool(column_map.get("quantity")),
     }
 
-    return ImportPreview(
-        columns_detected=column_map, sample_rows=sample, stats=stats
-    )
+    return ImportPreview(columns_detected=column_map, sample_rows=sample, stats=stats)

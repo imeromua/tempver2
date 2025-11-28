@@ -183,7 +183,9 @@ async def go_back_logic(message: Message, state: FSMContext):
                 "🔙 Головне меню:", reply_markup=get_main_menu_kb(False)
             )
     else:
-        await message.answer("🔙 Головне меню:", reply_markup=get_main_menu_kb(is_admin))
+        await message.answer(
+            "🔙 Головне меню:", reply_markup=get_main_menu_kb(is_admin)
+        )
 
 
 @router.message(F.text == BTN_DELETE_LIST)
@@ -195,8 +197,9 @@ async def delete_current_list(message: Message):
     )
 
 
-@router.message(F.text == BTN_SAVE_LIST)
-async def save_current_list_trigger(message: Message, bot: Bot):
+@router.message(F.text == "💾 Зберегти список")
+async def save_current_list_trigger(message: Message, state: FSMContext, bot: Bot):
+    """Тригер для збереження поточного списку."""
     user_id = message.from_user.id
     msg = await message.answer("⏳ Зберігаю список...")
 
@@ -204,39 +207,78 @@ async def save_current_list_trigger(message: Message, bot: Bot):
     surplus_list_path = None
 
     try:
-        async with async_session() as session:
-            async with session.begin():
-                main_list_path, surplus_list_path = await process_and_save_list(
-                    session, user_id
-                )
+        # БЕЗ session - функція створює власну
+        main_list_path, surplus_list_path = await process_and_save_list(user_id)
 
         await msg.delete()
 
         if not main_list_path and not surplus_list_path:
-            await message.answer("❌ Список порожній або виникла помилка.")
-        else:
-            if main_list_path:
-                await bot.send_document(
-                    user_id, FSInputFile(main_list_path), caption="✅ Ваше замовлення"
-                )
-                if os.path.exists(main_list_path):
-                    os.remove(main_list_path)
-            if surplus_list_path:
-                await bot.send_document(
-                    user_id, FSInputFile(surplus_list_path), caption="⚠️ Лишки (дефіцит)"
-                )
-                if os.path.exists(surplus_list_path):
-                    os.remove(surplus_list_path)
-
-            is_admin = user_id in ADMIN_IDS
             await message.answer(
-                "✅ Список збережено та очищено!",
-                reply_markup=get_main_menu_kb(is_admin),
+                "❌ Список порожній або виникла помилка.\n\n"
+                "Переконайтесь, що ви додали товари до списку.",
+                reply_markup=get_main_menu_kb(user_id in ADMIN_IDS),
             )
+            return
+
+        # Відправляємо основне замовлення
+        if main_list_path and os.path.exists(main_list_path):
+            await bot.send_document(
+                user_id,
+                FSInputFile(main_list_path),
+                caption="✅ Ваше замовлення\n\nТовари доступні для збору.",
+            )
+            os.remove(main_list_path)
+            logger.info("Відправлено основне замовлення для user_id %s", user_id)
+
+        # Відправляємо дефіцит (якщо є)
+        if surplus_list_path and os.path.exists(surplus_list_path):
+            await bot.send_document(
+                user_id,
+                FSInputFile(surplus_list_path),
+                caption="⚠️ Дефіцит\n\nЦих товарів недостатньо або немає на складі.",
+            )
+            os.remove(surplus_list_path)
+            logger.info("Відправлено список дефіциту для user_id %s", user_id)
+
+        success_message = (
+            "✅ Список успішно збережено!\n\n"
+            "📦 Файли надіслано вище\n"
+            "🗑 Поточний список очищено\n\n"
+            "Можете починати новий збір!"
+        )
+
+        await message.answer(
+            success_message, reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
+        )
+
+        logger.info("Користувач %s зберіг список", user_id)
 
     except Exception as e:
-        logger.error(f"Save list error: {e}", exc_info=True)
-        await message.answer("❌ Помилка збереження.")
+        logger.error("Save list error: %s", e, exc_info=True)
+
+        try:
+            await msg.delete()
+        except:
+            pass
+
+        await message.answer(
+            "❌ Помилка збереження списку\n\n"
+            "Спробуйте ще раз або зверніться до адміністратора.",
+            reply_markup=get_main_menu_kb(user_id in ADMIN_IDS),
+        )
+
+        # Видаляємо файли у разі помилки
+        if main_list_path and os.path.exists(main_list_path):
+            try:
+                os.remove(main_list_path)
+            except:
+                pass
+
+        if surplus_list_path and os.path.exists(surplus_list_path):
+            try:
+                os.remove(surplus_list_path)
+            except:
+                pass
 
 
 @router.message(F.text == BTN_EDIT_LIST)
@@ -292,7 +334,9 @@ async def confirm_delete_archives(message: Message, state: FSMContext):
 @router.message(ConfirmationStates.waiting_delete_archives, F.text == BTN_NO_CANCEL)
 async def cancel_delete_archives(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Видалення скасовано.", reply_markup=get_archives_submenu_kb())
+    await message.answer(
+        "❌ Видалення скасовано.", reply_markup=get_archives_submenu_kb()
+    )
 
 
 # ==============================================================================
@@ -418,4 +462,6 @@ async def confirm_clean_db(message: Message, state: FSMContext):
 async def cancel_clean_db(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Очистка скасована.", reply_markup=get_utilities_menu_kb())
+
+
 # ==============================================================================

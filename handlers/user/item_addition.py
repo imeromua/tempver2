@@ -264,7 +264,9 @@ async def confirm_quantity(message: Message, state: FSMContext):
     quantity = data.get("current_quantity", 1)
 
     user_id = message.from_user.id
-    success, result_text = await _add_item_to_cart_service(user_id, product_id, quantity)
+    success, result_text = await _add_item_to_cart_service(
+        user_id, product_id, quantity
+    )
 
     await state.clear()
     is_admin = user_id in [1962821395]  # TODO: замінити на ADMIN_IDS
@@ -324,4 +326,6 @@ async def process_manual_quantity(message: Message, state: FSMContext):
 async def invalid_manual_input(message: Message):
     """Обробляє невірний формат введення."""
     await message.answer("❌ Будь ласка, введіть число.")
+
+
 # ==============================================================================

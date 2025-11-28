@@ -64,9 +64,7 @@ async def orm_get_temp_list_department(user_id: int) -> Optional[int]:
         return None
 
 
-async def orm_get_temp_list_item(
-    user_id: int, product_id: int
-) -> Optional[TempList]:
+async def orm_get_temp_list_item(user_id: int, product_id: int) -> Optional[TempList]:
     """
     Отримує конкретну позицію з тимчасового списку користувача.
     Повертає None, якщо товар не знайдено.
@@ -75,9 +73,7 @@ async def orm_get_temp_list_item(
         async with async_session() as session:
             result = await session.execute(
                 select(TempList).where(
-                    and_(
-                        TempList.user_id == user_id, TempList.product_id == product_id
-                    )
+                    and_(TempList.user_id == user_id, TempList.product_id == product_id)
                 )
             )
             return result.scalar_one_or_none()
@@ -109,9 +105,7 @@ async def orm_add_item_to_temp_list(
             # Перевіряємо, чи вже є товар в списку
             existing = await session.execute(
                 select(TempList).where(
-                    and_(
-                        TempList.user_id == user_id, TempList.product_id == product_id
-                    )
+                    and_(TempList.user_id == user_id, TempList.product_id == product_id)
                 )
             )
             existing_item = existing.scalar_one_or_none()
@@ -164,7 +158,7 @@ async def orm_update_item_quantity(
     """
     Оновлює кількість товару в тимчасовому списку.
     Якщо нова кількість <= 0, видаляє товар зі списку.
-    
+
     Примітка: Ця функція приймає session як параметр і НЕ створює власну.
     """
     try:
@@ -212,9 +206,7 @@ async def orm_delete_item_from_temp_list(item_id: int) -> bool:
             return True
 
     except Exception as e:
-        logger.error(
-            "Помилка видалення позиції ID %s: %s", item_id, e, exc_info=True
-        )
+        logger.error("Помилка видалення позиції ID %s: %s", item_id, e, exc_info=True)
         return False
 
 

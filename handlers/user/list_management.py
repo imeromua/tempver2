@@ -54,9 +54,7 @@ async def create_new_list_handler(message: Message, state: FSMContext):
     temp_list = await orm_get_temp_list(user_id)
 
     if not temp_list:
-        await message.answer(
-            "✅ Список вже порожній. Можете починати додавати товари!"
-        )
+        await message.answer("✅ Список вже порожній. Можете починати додавати товари!")
         return
 
     # Очищаємо

@@ -39,7 +39,7 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
             await message.answer(
                 "❌ Список порожній або виникла помилка.\n\n"
                 "Переконайтесь, що ви додали товари до списку.",
-                reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
+                reply_markup=get_main_menu_kb(user_id in ADMIN_IDS),
             )
             return
 
@@ -78,16 +78,16 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.error("Помилка збереження списку для %s: %s", user_id, e, exc_info=True)
-        
+
         try:
             await msg.delete()
         except:
             pass
-        
+
         await message.answer(
             "❌ Помилка збереження списку\n\n"
             "Спробуйте ще раз або зверніться до адміністратора.",
-            reply_markup=get_main_menu_kb(user_id in ADMIN_IDS)
+            reply_markup=get_main_menu_kb(user_id in ADMIN_IDS),
         )
 
         # Видаляємо файли у разі помилки
@@ -96,7 +96,7 @@ async def save_list_handler(message: Message, state: FSMContext, bot: Bot):
                 os.remove(main_list_path)
             except:
                 pass
-        
+
         if surplus_list_path and os.path.exists(surplus_list_path):
             try:
                 os.remove(surplus_list_path)
@@ -118,7 +118,6 @@ async def cancel_save_handler(message: Message, state: FSMContext):
     await state.clear()
 
     await message.answer(
-        "❌ Збереження скасовано.\n\n"
-        "Ваш список залишився незмінним.",
+        "❌ Збереження скасовано.\n\n" "Ваш список залишився незмінним.",
         reply_markup=get_main_menu_kb(is_admin),
     )

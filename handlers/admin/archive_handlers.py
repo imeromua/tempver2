@@ -46,7 +46,9 @@ async def admin_view_all_archives(message: Message):
     ):
         count = len(user_lists)
         last_date = user_lists[0].created_at.strftime("%d.%m.%Y")
-        text_lines.append(f"• User ID: `{user_id}` — {count} списків (останній: {last_date})")
+        text_lines.append(
+            f"• User ID: `{user_id}` — {count} списків (останній: {last_date})"
+        )
 
     text_lines.append(f"\n📊 Всього користувачів: **{len(user_archives)}**")
     text_lines.append(f"📊 Всього списків: **{len(archives)}**")
@@ -60,6 +62,7 @@ async def admin_view_all_archives(message: Message):
 
 # Це внутрішні функції, які використовуються в menu_navigation.py
 # Перенесені сюди для зручності
+
 
 async def _pack_user_files_to_zip(user_id: int):
     """

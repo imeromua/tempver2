@@ -24,7 +24,9 @@ async def orm_get_user(session: AsyncSession, user_id: int) -> Optional[User]:
         result = await session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
     except Exception as e:
-        logger.error("Помилка отримання користувача ID %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Помилка отримання користувача ID %s: %s", user_id, e, exc_info=True
+        )
         return None
 
 

@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 def format_list_for_display(temp_list: List[TempList]) -> str:
     """
     Форматує тимчасовий список для відображення користувачу.
-    
+
     Args:
         temp_list: Список позицій TempList
-    
+
     Returns:
         Відформатований текст для відправки користувачу
     """
@@ -61,14 +61,14 @@ def format_list_for_display(temp_list: List[TempList]) -> str:
 async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[str]]:
     """
     Обробляє тимчасовий список користувача та зберігає його.
-    
+
     Розділяє товари на:
     - Доступні (основне замовлення)
     - Дефіцит (недостатньо на складі)
-    
+
     Args:
         user_id: ID користувача
-    
+
     Returns:
         Tuple[main_list_path, surplus_list_path] - шляхи до створених файлів
         (None, None) якщо список порожній або помилка
@@ -103,35 +103,41 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
 
             if available_qty >= requested_qty:
                 # Достатньо на складі
-                available_items.append({
-                    "артикул": product.артикул,
-                    "назва": product.назва,
-                    "група": product.група,
-                    "кількість": requested_qty,
-                    "залишок": stock_qty,
-                })
+                available_items.append(
+                    {
+                        "артикул": product.артикул,
+                        "назва": product.назва,
+                        "група": product.група,
+                        "кількість": requested_qty,
+                        "залишок": stock_qty,
+                    }
+                )
             else:
                 # Недостатньо
                 if available_qty > 0:
                     # Частково є
-                    available_items.append({
-                        "артикул": product.артикул,
-                        "назва": product.назва,
-                        "група": product.група,
-                        "кількість": available_qty,
-                        "залишок": stock_qty,
-                    })
+                    available_items.append(
+                        {
+                            "артикул": product.артикул,
+                            "назва": product.назва,
+                            "група": product.група,
+                            "кількість": available_qty,
+                            "залишок": stock_qty,
+                        }
+                    )
 
                 # Дефіцит
                 deficit_qty = requested_qty - available_qty
-                deficit_items.append({
-                    "артикул": product.артикул,
-                    "назва": product.назва,
-                    "група": product.група,
-                    "потрібно": requested_qty,
-                    "є_в_наявності": available_qty,
-                    "дефіцит": deficit_qty,
-                })
+                deficit_items.append(
+                    {
+                        "артикул": product.артикул,
+                        "назва": product.назва,
+                        "група": product.група,
+                        "потрібно": requested_qty,
+                        "є_в_наявності": available_qty,
+                        "дефіцит": deficit_qty,
+                    }
+                )
 
         # Створюємо файли
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -148,7 +154,9 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
             df_main = pd.DataFrame(available_items)
             df_main.to_excel(main_list_path, index=False, engine="openpyxl")
 
-            logger.info("Створено основне замовлення для user_id %s: %s", user_id, main_filename)
+            logger.info(
+                "Створено основне замовлення для user_id %s: %s", user_id, main_filename
+            )
 
         # Дефіцит
         if deficit_items:
@@ -158,7 +166,9 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
             df_deficit = pd.DataFrame(deficit_items)
             df_deficit.to_excel(surplus_list_path, index=False, engine="openpyxl")
 
-            logger.info("Створено список дефіциту для user_id %s: %s", user_id, deficit_filename)
+            logger.info(
+                "Створено список дефіциту для user_id %s: %s", user_id, deficit_filename
+            )
 
         # Зберігаємо в БД
         async with async_session() as session:
@@ -176,7 +186,7 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
                 saved_item = SavedListItem(
                     list_id=saved_list.id,
                     article_name=f"{item_data['артикул']} - {item_data['назва']}",
-                    quantity=item_data['кількість'],
+                    quantity=item_data["кількість"],
                 )
                 session.add(saved_item)
 
@@ -188,7 +198,9 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
         return main_list_path, surplus_list_path
 
     except Exception as e:
-        logger.error("Помилка обробки списку для user_id %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Помилка обробки списку для user_id %s: %s", user_id, e, exc_info=True
+        )
         return None, None
 
 
@@ -200,11 +212,11 @@ async def process_and_save_list(user_id: int) -> Tuple[Optional[str], Optional[s
 def generate_product_card(product: Product, available_qty: float) -> str:
     """
     Генерує текстову картку товару для відображення.
-    
+
     Args:
         product: Об'єкт Product
         available_qty: Доступна кількість
-    
+
     Returns:
         Відформатований текст картки
     """

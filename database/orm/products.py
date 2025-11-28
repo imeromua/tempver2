@@ -38,11 +38,15 @@ async def orm_get_product_by_article(
         )
         return result.scalar_one_or_none()
     except Exception as e:
-        logger.error("Помилка отримання товару за артикулом %s: %s", article, e, exc_info=True)
+        logger.error(
+            "Помилка отримання товару за артикулом %s: %s", article, e, exc_info=True
+        )
         return None
 
 
-async def orm_get_all_products(session: AsyncSession, active_only: bool = True) -> List[Product]:
+async def orm_get_all_products(
+    session: AsyncSession, active_only: bool = True
+) -> List[Product]:
     """Отримує всі товари (опціонально тільки активні)."""
     try:
         query = select(Product)
@@ -85,7 +89,9 @@ async def orm_search_products_fuzzy(
         )
         return list(result.scalars().all())
     except Exception as e:
-        logger.error("Помилка пошуку товарів за запитом '%s': %s", query, e, exc_info=True)
+        logger.error(
+            "Помилка пошуку товарів за запитом '%s': %s", query, e, exc_info=True
+        )
         return []
 
 
@@ -110,7 +116,9 @@ async def orm_search_products_by_department(
         result = await session.execute(base_query.limit(limit))
         return list(result.scalars().all())
     except Exception as e:
-        logger.error("Помилка пошуку товарів за відділом %s: %s", department, e, exc_info=True)
+        logger.error(
+            "Помилка пошуку товарів за відділом %s: %s", department, e, exc_info=True
+        )
         return []
 
 
@@ -137,7 +145,9 @@ async def orm_update_product_quantity(
         return True
     except Exception as e:
         await session.rollback()
-        logger.error("Помилка оновлення кількості товару ID %s: %s", product_id, e, exc_info=True)
+        logger.error(
+            "Помилка оновлення кількості товару ID %s: %s", product_id, e, exc_info=True
+        )
         return False
 
 
@@ -152,11 +162,18 @@ async def orm_update_product_reserved(
             .values(відкладено=new_reserved)
         )
         await session.commit()
-        logger.info("Оновлено відкладено для товару ID %s: %s", product_id, new_reserved)
+        logger.info(
+            "Оновлено відкладено для товару ID %s: %s", product_id, new_reserved
+        )
         return True
     except Exception as e:
         await session.rollback()
-        logger.error("Помилка оновлення відкладеного товару ID %s: %s", product_id, e, exc_info=True)
+        logger.error(
+            "Помилка оновлення відкладеного товару ID %s: %s",
+            product_id,
+            e,
+            exc_info=True,
+        )
         return False
 
 
@@ -171,7 +188,9 @@ async def orm_deactivate_product(session: AsyncSession, product_id: int) -> bool
         return True
     except Exception as e:
         await session.rollback()
-        logger.error("Помилка деактивації товару ID %s: %s", product_id, e, exc_info=True)
+        logger.error(
+            "Помилка деактивації товару ID %s: %s", product_id, e, exc_info=True
+        )
         return False
 
 
@@ -180,7 +199,9 @@ async def orm_deactivate_product(session: AsyncSession, product_id: int) -> bool
 # ==============================================================================
 
 
-async def orm_get_products_count(session: AsyncSession, active_only: bool = True) -> int:
+async def orm_get_products_count(
+    session: AsyncSession, active_only: bool = True
+) -> int:
     """Повертає кількість товарів в БД."""
     try:
         query = select(func.count(Product.id))
@@ -234,12 +255,19 @@ def get_available_quantity(product: Product, temp_reserved: int = 0) -> int:
     try:
         stock_qty = validate_product_quantity(product.кількість)
         if stock_qty is None:
-            logger.error("Невірна кількість для товару ID %s: %s", product.id, product.кількість)
+            logger.error(
+                "Невірна кількість для товару ID %s: %s", product.id, product.кількість
+            )
             return 0
 
         permanently_reserved = product.відкладено or 0
         available = int(stock_qty - permanently_reserved - temp_reserved)
         return max(0, available)  # Не може бути менше 0
     except Exception as e:
-        logger.error("Помилка розрахунку доступної кількості для товару ID %s: %s", product.id, e, exc_info=True)
+        logger.error(
+            "Помилка розрахунку доступної кількості для товару ID %s: %s",
+            product.id,
+            e,
+            exc_info=True,
+        )
         return 0

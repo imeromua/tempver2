@@ -7,12 +7,12 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
+from sqlalchemy import func, select
 
 from config import ADMIN_IDS
 from database.engine import async_session
 from database.models import User
 from keyboards.reply import get_confirmation_kb, get_utilities_menu_kb
-from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -59,7 +59,9 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     )
 
 
-@router.message(UtilityStates.waiting_broadcast_message, F.text == "✅ Так, підтверджую")
+@router.message(
+    UtilityStates.waiting_broadcast_message, F.text == "✅ Так, підтверджую"
+)
 async def confirm_broadcast(message: Message, state: FSMContext, bot: Bot):
     """Виконує розсилку після підтвердження."""
     if message.from_user.id not in ADMIN_IDS:
@@ -147,7 +149,9 @@ async def validate_database(message: Message):
             # Перевірка товарів з невірним форматом кількості
             from database.models import Product
 
-            result = await session.execute(select(Product).where(Product.активний == True))
+            result = await session.execute(
+                select(Product).where(Product.активний == True)
+            )
             products = result.scalars().all()
 
             invalid_qty_count = 0
@@ -158,7 +162,9 @@ async def validate_database(message: Message):
                     invalid_qty_count += 1
 
             if invalid_qty_count > 0:
-                issues.append(f"⚠️ Товарів з невірним форматом кількості: {invalid_qty_count}")
+                issues.append(
+                    f"⚠️ Товарів з невірним форматом кількості: {invalid_qty_count}"
+                )
 
             # Перевірка orphan записів
             from database.models import TempList

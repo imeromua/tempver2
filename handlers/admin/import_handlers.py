@@ -11,16 +11,13 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, Message
+from sqlalchemy import select
 
 from config import ADMIN_IDS, ARCHIVES_PATH, BACKUP_DIR, DB_NAME, DB_TYPE
 from database.engine import async_session
 from database.models import Product, StockHistory
 from keyboards.reply import get_admin_menu_kb, get_confirmation_kb
-from sqlalchemy import select
-from utils.import_processor import (
-    generate_import_preview,
-    process_import_dataframe,
-)
+from utils.import_processor import generate_import_preview, process_import_dataframe
 from utils.markdown_corrector import (
     clean_text_for_markdown,
     escape_markdown,
@@ -74,7 +71,7 @@ async def proceed_with_import(message: Message, state: FSMContext, bot: Bot):
         return
 
     await state.set_state(ImportStates.waiting_for_file)
-    
+
     help_text = (
         "📥 Розумний імпорт залишків\n\n"
         "Надішліть Excel файл (.xlsx, .xls, .ods)\n\n"
@@ -90,7 +87,7 @@ async def proceed_with_import(message: Message, state: FSMContext, bot: Bot):
         "• Комбіновані: артикул + назва в одній колонці\n\n"
         "Для скасування: /reset"
     )
-    
+
     await message.answer(help_text, reply_markup=get_admin_menu_kb())
 
 
@@ -100,7 +97,9 @@ async def proceed_with_import(message: Message, state: FSMContext, bot: Bot):
 
 
 @router.message(ImportStates.waiting_for_file, F.document)
-async def process_import_file_with_preview(message: Message, state: FSMContext, bot: Bot):
+async def process_import_file_with_preview(
+    message: Message, state: FSMContext, bot: Bot
+):
     """Обробляє файл та показує превʼю для підтвердження."""
     if message.from_user.id not in ADMIN_IDS:
         return
@@ -122,7 +121,8 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
         # Завантажуємо файл
         file = await bot.get_file(document.file_id)
         file_path = os.path.join(
-            ARCHIVES_PATH, f"import_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            ARCHIVES_PATH,
+            f"import_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         )
         os.makedirs(ARCHIVES_PATH, exist_ok=True)
 
@@ -130,7 +130,7 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
 
         # Читаємо Excel (в executor щоб не блокувати)
         loop = asyncio.get_running_loop()
-        
+
         # Підтримка різних форматів
         if document.file_name.endswith(".ods"):
             df = await loop.run_in_executor(None, pd.read_excel, file_path, None, "odf")
@@ -162,7 +162,7 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
                 emoji = "✅"
             else:
                 emoji = "❌"
-            
+
             standard_ua = {
                 "department": "Відділ",
                 "group": "Група",
@@ -172,8 +172,8 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
                 "sum": "Сума",
                 "months_no_movement": "Без руху",
             }.get(standard, standard)
-            
-            detected_safe = escape_markdown(detected) if detected else 'не знайдено'
+
+            detected_safe = escape_markdown(detected) if detected else "не знайдено"
             preview_text += f"{emoji} {standard_ua}: {detected_safe}\n"
 
         # Показуємо приклад даних
@@ -185,22 +185,24 @@ async def process_import_file_with_preview(message: Message, state: FSMContext, 
 
         await msg.delete()
         # Відправляємо БЕЗ parse_mode для безпеки
-        await message.answer(preview_text, reply_markup=get_confirmation_kb(), parse_mode=None)
+        await message.answer(
+            preview_text, reply_markup=get_confirmation_kb(), parse_mode=None
+        )
 
     except Exception as e:
         logger.error("Помилка аналізу файлу: %s", e, exc_info=True)
-        
+
         try:
             await msg.delete()
         except:
             pass
-        
+
         error_msg = f"❌ Помилка читання файлу:\n{str(e)[:200]}"
         await message.answer(error_msg, reply_markup=get_admin_menu_kb())
-        
-        if 'file_path' in locals() and os.path.exists(file_path):
+
+        if "file_path" in locals() and os.path.exists(file_path):
             os.remove(file_path)
-        
+
         await state.clear()
 
 
@@ -239,7 +241,9 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
 
     try:
         await msg.delete()
-        progress_msg = await message.answer("📊 Імпорт даних...\n⏳ 0%", parse_mode=None)
+        progress_msg = await message.answer(
+            "📊 Імпорт даних...\n⏳ 0%", parse_mode=None
+        )
 
         # Читаємо файл
         loop = asyncio.get_running_loop()
@@ -255,19 +259,21 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
                 f"❌ Валідація не пройдена!\n\n"
                 f"Помилок: {len(validation.errors)}\n\n"
             )
-            
+
             for error in validation.errors[:10]:
                 error_text += f"• {error}\n"
-            
+
             if len(validation.errors) > 10:
                 error_text += f"\n... та ще {len(validation.errors) - 10} помилок"
 
             await progress_msg.delete()
-            await message.answer(error_text, reply_markup=get_admin_menu_kb(), parse_mode=None)
-            
+            await message.answer(
+                error_text, reply_markup=get_admin_menu_kb(), parse_mode=None
+            )
+
             if os.path.exists(file_path):
                 os.remove(file_path)
-            
+
             await state.clear()
             return
 
@@ -284,7 +290,7 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
             for idx, row in processed_df.iterrows():
                 try:
                     article = row["артикул"]
-                    
+
                     # Оновлюємо прогрес кожні 10%
                     current_progress = int((idx / total) * 100)
                     if current_progress >= last_progress + 10:
@@ -292,7 +298,7 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
                         try:
                             await progress_msg.edit_text(
                                 f"📊 Імпорт даних...\n⏳ {current_progress}%",
-                                parse_mode=None
+                                parse_mode=None,
                             )
                         except Exception:
                             pass  # Ігноруємо помилки редагування
@@ -308,8 +314,10 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
                         if existing_product.ціна and row["ціна"] > 0:
                             old_price = existing_product.ціна
                             new_price = row["ціна"]
-                            change_percent = abs((new_price - old_price) / old_price * 100)
-                            
+                            change_percent = abs(
+                                (new_price - old_price) / old_price * 100
+                            )
+
                             if change_percent > 50:
                                 price_warnings.append(
                                     f"⚠️ {article}: ціна {old_price:.2f} → {new_price:.2f} ({change_percent:.0f}%)"
@@ -385,7 +393,9 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
                 result_text += f"... та ще {len(price_warnings) - 5}"
 
         await progress_msg.delete()
-        await message.answer(result_text, reply_markup=get_admin_menu_kb(), parse_mode=None)
+        await message.answer(
+            result_text, reply_markup=get_admin_menu_kb(), parse_mode=None
+        )
         await state.clear()
 
         logger.info(
@@ -397,18 +407,18 @@ async def confirm_and_import(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.error("Критична помилка імпорту: %s", e, exc_info=True)
-        
+
         try:
             await progress_msg.delete()
         except:
             pass
-        
+
         error_msg = f"❌ Помилка імпорту:\n{str(e)[:200]}"
         await message.answer(error_msg, reply_markup=get_admin_menu_kb())
-        
-        if 'file_path' in locals() and os.path.exists(file_path):
+
+        if "file_path" in locals() and os.path.exists(file_path):
             os.remove(file_path)
-        
+
         await state.clear()
 
 
@@ -452,7 +462,11 @@ async def download_import_template(message: Message):
             "в": [610, 310, 70],
             "г": ["Драй фуд", "Велика побутова техніка", "Опалення"],
             "а": ["61602145", "31062294", "70204771"],
-            "н": ["Вино Origin Wine Australia", "Машина пральна WHIRLPOOL", "Водонагрівач"],
+            "н": [
+                "Вино Origin Wine Australia",
+                "Машина пральна WHIRLPOOL",
+                "Водонагрівач",
+            ],
             "м": [0, 3, 1],
             "к": ["10", "2", "5"],
             "с": [4500.50, 15000.00, 8200.00],
@@ -488,4 +502,6 @@ async def download_import_template(message: Message):
     except Exception as e:
         logger.error("Помилка створення шаблону: %s", e, exc_info=True)
         await message.answer(f"❌ Помилка створення шаблону:\n{str(e)}")
+
+
 # ==============================================================================

@@ -109,7 +109,9 @@ async def list_backups(message: Message):
         for idx, (filename, size, timestamp) in enumerate(backup_files[:10], start=1):
             date_str = datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M")
             size_mb = size / (1024 * 1024)
-            text_lines.append(f"{idx}. `{filename}`\n   📅 {date_str} | 💾 {size_mb:.2f} MB")
+            text_lines.append(
+                f"{idx}. `{filename}`\n   📅 {date_str} | 💾 {size_mb:.2f} MB"
+            )
 
         text_lines.append(f"\n📊 Всього бекапів: **{len(backup_files)}**")
 
@@ -154,8 +156,7 @@ async def cleanup_old_backups(message: Message):
 
         if deleted_count > 0:
             await message.answer(
-                f"✅ Видалено старих бекапів: **{deleted_count}**\n"
-                f"(старше 30 днів)"
+                f"✅ Видалено старих бекапів: **{deleted_count}**\n" f"(старше 30 днів)"
             )
         else:
             await message.answer("✅ Немає старих бекапів для видалення.")

@@ -100,7 +100,9 @@ async def export_collected(message: Message):
         filepath = os.path.join(ARCHIVES_PATH, filename)
         os.makedirs(ARCHIVES_PATH, exist_ok=True)
 
-        await loop.run_in_executor(None, lambda: df.to_excel(filepath, index=False, engine="openpyxl"))
+        await loop.run_in_executor(
+            None, lambda: df.to_excel(filepath, index=False, engine="openpyxl")
+        )
 
         # Відправляємо файл
         await message.answer_document(

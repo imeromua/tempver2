@@ -20,12 +20,12 @@ def format_product_card(
 ) -> str:
     """
     Форматує картку товару з детальною інформацією.
-    
+
     Args:
         product: Об'єкт товару з БД
         available_qty: Доступна кількість для замовлення
         temp_reserved: Кількість в тимчасових резервах
-    
+
     Returns:
         Відформатований текст картки
     """
@@ -39,7 +39,7 @@ def format_product_card(
 
         # Інформація про резерви
         permanently_reserved = product.відкладено or 0
-        
+
         # Базова інформація
         lines = [
             f"📦 **{product.назва}**\n",
@@ -53,7 +53,7 @@ def format_product_card(
         # Резерви
         if permanently_reserved > 0:
             lines.append(f"**Відкладено:** {permanently_reserved}")
-        
+
         if temp_reserved > 0:
             lines.append(f"**В резерві (інші користувачі):** {temp_reserved}")
 
@@ -66,7 +66,7 @@ def format_product_card(
         # Додаткова інформація (якщо є)
         if product.ціна and product.ціна > 0:
             lines.append(f"**Ціна:** {product.ціна:.2f} грн")
-        
+
         if product.сума_залишку and product.сума_залишку > 0:
             lines.append(f"**Сума залишку:** {product.сума_залишку:.2f} грн")
 
@@ -76,7 +76,9 @@ def format_product_card(
         return "\n".join(lines)
 
     except Exception as e:
-        logger.error("Помилка форматування картки товару ID %s: %s", product.id, e, exc_info=True)
+        logger.error(
+            "Помилка форматування картки товару ID %s: %s", product.id, e, exc_info=True
+        )
         return f"📦 **{product.назва}**\nАртикул: `{product.артикул}`\n\n❌ Помилка відображення деталей"
 
 
@@ -89,27 +91,27 @@ async def send_or_edit_product_card(
 ) -> Optional[Message]:
     """
     Надсилає або редагує картку товару.
-    
+
     Args:
         bot: Екземпляр бота
         chat_id: ID чату
         user_id: ID користувача
         product: Об'єкт товару
         message_id: ID повідомлення для редагування (якщо потрібно)
-    
+
     Returns:
         Надіслане або відредаговане повідомлення
     """
     try:
         # Отримуємо інформацію про резерви
         temp_reserved = await orm_get_total_temp_reservation_for_product(product.id)
-        
+
         # Рахуємо доступну кількість
         try:
             stock_qty = float(str(product.кількість).replace(",", "."))
         except ValueError:
             stock_qty = 0
-        
+
         permanently_reserved = product.відкладено or 0
         available = max(0, int(stock_qty - permanently_reserved - temp_reserved))
 
@@ -134,14 +136,19 @@ async def send_or_edit_product_card(
             return await bot.send_message(chat_id, card_text)
 
     except Exception as e:
-        logger.error("Помилка відправки/редагування картки товару ID %s: %s", product.id, e, exc_info=True)
+        logger.error(
+            "Помилка відправки/редагування картки товару ID %s: %s",
+            product.id,
+            e,
+            exc_info=True,
+        )
         return None
 
 
 def format_product_short(product: Product) -> str:
     """
     Короткий формат товару (для списків).
-    
+
     Returns:
         Компактний рядок з основною інформацією
     """
@@ -151,28 +158,30 @@ def format_product_short(product: Product) -> str:
 def format_search_result(product: Product, index: int, similarity: int = 0) -> str:
     """
     Форматує товар для відображення в результатах пошуку.
-    
+
     Args:
         product: Товар
         index: Порядковий номер
         similarity: Відсоток схожості (0-100)
-    
+
     Returns:
         Відформатований рядок
     """
     result = f"{index}. `{product.артикул}` **{product.назва}**\n"
     result += f"   Відділ: {product.відділ} | Залишок: {product.кількість}"
-    
+
     if similarity > 0:
         result += f"\n   Схожість: {similarity}%"
-    
+
     return result + "\n"
 
 
-def validate_product_availability(product: Product, requested_qty: int) -> tuple[bool, str]:
+def validate_product_availability(
+    product: Product, requested_qty: int
+) -> tuple[bool, str]:
     """
     Перевіряє чи доступна потрібна кількість товару.
-    
+
     Returns:
         (доступність: bool, повідомлення: str)
     """

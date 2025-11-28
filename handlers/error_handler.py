@@ -64,7 +64,9 @@ async def error_handler(event: ErrorEvent) -> Any:
         ),
     ):
         error_traceback = "".join(
-            traceback.format_exception(type(exception), exception, exception.__traceback__)
+            traceback.format_exception(
+                type(exception), exception, exception.__traceback__
+            )
         )
         logger.critical("Критична помилка:\n%s", error_traceback)
 
@@ -112,7 +114,9 @@ async def error_handler(event: ErrorEvent) -> Any:
     elif isinstance(exception, AttributeError):
         # Відсутній атрибут (часто None замість об'єкта)
         user_message = "❌ Помилка обробки даних. Спробуйте ще раз."
-        logger.error("AttributeError для user_id=%s: %s", user_id, exception, exc_info=True)
+        logger.error(
+            "AttributeError для user_id=%s: %s", user_id, exception, exc_info=True
+        )
 
     elif isinstance(exception, IndexError):
         # Вихід за межі списку
@@ -131,7 +135,9 @@ async def error_handler(event: ErrorEvent) -> Any:
         try:
             await update.message.answer(user_message)
         except Exception as send_error:
-            logger.error("Не вдалося надіслати повідомлення про помилку: %s", send_error)
+            logger.error(
+                "Не вдалося надіслати повідомлення про помилку: %s", send_error
+            )
 
     elif user_message and update.callback_query:
         try:
@@ -158,7 +164,9 @@ async def error_handler(event: ErrorEvent) -> Any:
 # ==============================================================================
 
 
-async def notify_admins_about_error(event: ErrorEvent, user_id: int, exception: Exception):
+async def notify_admins_about_error(
+    event: ErrorEvent, user_id: int, exception: Exception
+):
     """Повідомляє адміністраторів про критичну помилку."""
     try:
         from aiogram import Bot

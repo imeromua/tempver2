@@ -205,6 +205,7 @@ async def orm_pack_user_files_to_zip(user_id: int) -> Optional[str]:
         return zip_path
 
     except Exception as e:
-        logger.error("Помилка створення ZIP для user_id %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Помилка створення ZIP для user_id %s: %s", user_id, e, exc_info=True
+        )
         return None
-# ==============================================================================

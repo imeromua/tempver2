@@ -33,7 +33,7 @@ def _create_stock_report_sync() -> str:
     """
     СИНХРОННА функція для генерації звіту по залишках.
     Використовується в executor.
-    
+
     Returns:
         Шлях до створеного файлу або None
     """
@@ -41,9 +41,11 @@ def _create_stock_report_sync() -> str:
         with sync_session() as session:
             # Отримуємо всі активні товари
             from sqlalchemy import select
-            
+
             result = session.execute(
-                select(Product).where(Product.активний == True).order_by(Product.відділ, Product.артикул)
+                select(Product)
+                .where(Product.активний == True)
+                .order_by(Product.відділ, Product.артикул)
             )
             products = result.scalars().all()
 
@@ -54,17 +56,19 @@ def _create_stock_report_sync() -> str:
             # Формуємо DataFrame
             data = []
             for product in products:
-                data.append({
-                    "Артикул": product.артикул,
-                    "Назва": product.назва,
-                    "Відділ": product.відділ,
-                    "Група": product.група,
-                    "Кількість": product.кількість,
-                    "Відкладено": product.відкладено or 0,
-                    "Ціна": product.ціна or 0.0,
-                    "Сума залишку": product.сума_залишку or 0.0,
-                    "Місяці без руху": product.місяці_без_руху or 0,
-                })
+                data.append(
+                    {
+                        "Артикул": product.артикул,
+                        "Назва": product.назва,
+                        "Відділ": product.відділ,
+                        "Група": product.група,
+                        "Кількість": product.кількість,
+                        "Відкладено": product.відкладено or 0,
+                        "Ціна": product.ціна or 0.0,
+                        "Сума залишку": product.сума_залишку or 0.0,
+                        "Місяці без руху": product.місяці_без_руху or 0,
+                    }
+                )
 
             df = pd.DataFrame(data)
 
@@ -76,7 +80,9 @@ def _create_stock_report_sync() -> str:
 
             df.to_excel(filepath, index=False, engine="openpyxl")
 
-            logger.info("Створено звіт по залишках: %s (%s товарів)", filename, len(products))
+            logger.info(
+                "Створено звіт по залишках: %s (%s товарів)", filename, len(products)
+            )
             return filepath
 
     except Exception as e:
@@ -130,9 +136,10 @@ async def process_subtract_file(message: Message, state: FSMContext, bot: Bot):
             return
 
         # Віднімаємо від залишків
+        from sqlalchemy import select
+
         from database.engine import async_session
         from database.models import StockHistory
-        from sqlalchemy import select
 
         updated_count = 0
         not_found = []
@@ -142,7 +149,9 @@ async def process_subtract_file(message: Message, state: FSMContext, bot: Bot):
             for index, row in df.iterrows():
                 try:
                     article = str(row["Артикул"]).strip()
-                    quantity_to_subtract = float(str(row["Кількість"]).replace(",", "."))
+                    quantity_to_subtract = float(
+                        str(row["Кількість"]).replace(",", ".")
+                    )
 
                     # Шукаємо товар
                     result = await session.execute(
@@ -230,4 +239,6 @@ async def invalid_subtract_file(message: Message):
         "• **Кількість**\n\n"
         "Або скасуйте командою /reset"
     )
+
+
 # ==============================================================================

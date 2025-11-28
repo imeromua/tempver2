@@ -160,7 +160,9 @@ async def quick_edit_item(message: Message, state: FSMContext, bot: Bot):
         await show_list_in_edit_mode(bot, message.chat.id, user_id, state)
 
     except (ValueError, IndexError):
-        await message.answer("❌ Невірний формат. Використайте: `N K` (наприклад: `3 15`)")
+        await message.answer(
+            "❌ Невірний формат. Використайте: `N K` (наприклад: `3 15`)"
+        )
 
 
 # ==============================================================================
@@ -221,4 +223,6 @@ async def unknown_editing_command(message: Message):
         "• `N 0` - видалити позицію\n\n"
         "Або використайте кнопку '✅ Завершити редагування'"
     )
+
+
 # ==============================================================================

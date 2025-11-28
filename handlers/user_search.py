@@ -9,10 +9,7 @@ from thefuzz import fuzz
 
 from database.engine import async_session
 from database.orm import orm_search_products_fuzzy
-from handlers.user.item_addition import (
-    ItemAdditionStates,
-    start_quantity_selection,
-)
+from handlers.user.item_addition import ItemAdditionStates, start_quantity_selection
 from keyboards.reply import get_main_menu_kb
 
 logger = logging.getLogger(__name__)
@@ -36,9 +33,7 @@ async def user_search_handler(message: Message, state: FSMContext):
 
     # Ігноруємо короткі запити
     if len(query) < 2:
-        await message.answer(
-            "🔍 Введіть назву або артикул товару (мінімум 2 символи)."
-        )
+        await message.answer("🔍 Введіть назву або артикул товару (мінімум 2 символи).")
         return
 
     # Ігноруємо команди та спеціальні символи
@@ -83,9 +78,7 @@ async def user_search_handler(message: Message, state: FSMContext):
                 similarity_name = fuzz.partial_ratio(
                     query.lower(), product.назва.lower()
                 )
-                similarity_article = fuzz.ratio(
-                    query.lower(), product.артикул.lower()
-                )
+                similarity_article = fuzz.ratio(query.lower(), product.артикул.lower())
                 max_similarity = max(similarity_name, similarity_article)
 
                 text_lines.append(
@@ -156,8 +149,7 @@ async def select_product_from_results(message: Message, state: FSMContext):
             product = await orm_get_product_by_id(session, selected_product_id)
             if product:
                 await message.answer(
-                    f"✅ Обрано: **{product.назва}**\n"
-                    f"Артикул: `{product.артикул}`"
+                    f"✅ Обрано: **{product.назва}**\n" f"Артикул: `{product.артикул}`"
                 )
 
         await start_quantity_selection(message, state, selected_product_id)

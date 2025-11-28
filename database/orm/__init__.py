@@ -5,10 +5,24 @@
 Експортує всі функції для зручного імпорту.
 """
 
-# --- Користувачі ---
-from .users import (
-    orm_add_user,
-    orm_get_user,
+# --- Аналітика ---
+from .analytics import (
+    orm_get_all_collected_items_sync,
+    orm_get_department_stats,
+    orm_get_top_products,
+    orm_get_user_activity_stats,
+)
+
+# --- Архіви ---
+from .archives import (
+    orm_cleanup_old_archives,
+    orm_delete_saved_list,
+    orm_delete_user_archives,
+    orm_get_all_archives,
+    orm_get_archives_stats,
+    orm_get_saved_list_items,
+    orm_get_user_lists_archive,
+    orm_pack_user_files_to_zip,
 )
 
 # --- Товари ---
@@ -40,25 +54,8 @@ from .temp_lists import (
     orm_update_item_quantity,
 )
 
-# --- Архіви ---
-from .archives import (
-    orm_cleanup_old_archives,
-    orm_delete_saved_list,
-    orm_delete_user_archives,
-    orm_get_all_archives,
-    orm_get_archives_stats,
-    orm_get_saved_list_items,
-    orm_get_user_lists_archive,
-    orm_pack_user_files_to_zip,
-)
-
-# --- Аналітика ---
-from .analytics import (
-    orm_get_all_collected_items_sync,
-    orm_get_department_stats,
-    orm_get_top_products,
-    orm_get_user_activity_stats,
-)
+# --- Користувачі ---
+from .users import orm_add_user, orm_get_user
 
 __all__ = [
     # Користувачі

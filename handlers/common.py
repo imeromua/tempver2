@@ -49,7 +49,9 @@ async def cmd_start(message: Message, state: FSMContext):
                     first_name=first_name,
                 )
                 session.add(new_user)
-                logger.info("Зареєстровано нового користувача: %s (@%s)", user_id, username)
+                logger.info(
+                    "Зареєстровано нового користувача: %s (@%s)", user_id, username
+                )
 
             await session.commit()
 
@@ -194,7 +196,9 @@ async def cmd_stats(message: Message):
         await message.answer(stats_text)
 
     except Exception as e:
-        logger.error("Помилка отримання статистики для %s: %s", user_id, e, exc_info=True)
+        logger.error(
+            "Помилка отримання статистики для %s: %s", user_id, e, exc_info=True
+        )
         await message.answer("❌ Помилка отримання статистики.")
 
 
